@@ -2,7 +2,7 @@
 
 **English** | [中文](backlog.zh-CN.md)
 
-Status: `todo` · `decide` (needs a decision) · `doing` · `done` · `dropped`. Last updated: 2026-10-20.
+Status: `todo` · `decide` (needs a decision) · `doing` · `done` · `dropped`. Last updated: 2026-10-21.
 
 ## Done
 
@@ -21,6 +21,7 @@ Status: `todo` · `decide` (needs a decision) · `doing` · `done` · `dropped`.
 | B-005 | Do not hold the LVGL lock while sleeping | todo | `_stackchan_update_task` holds the lock during `vTaskDelay(100)` while xiaozhi is busy (`hal.cpp`). |
 | B-006 | Restore hotspot Wi-Fi provisioning | todo | 1.6 only allows App (BLE) setup, which self-built firmware cannot pass. Fallback today: BLE `setWifi` via nRF Connect. |
 | B-007 | Audio scheduling review | todo | Only if choppy speech returns: `opus_codec` (prio 2) runs below the LVGL and stackchan tasks (prio 3). |
+| B-018 | Upstream bug: network test, then AI Agent → reboot into App setup | todo | Seen 2026-10-21 ([devlog](devlog/2026-10-21.md)). Settings > Network test starts and connects Wi-Fi through `WifiManager` and leaves it on. Opening AI Agent without a reboot: `WifiBoard::TryWifiConnect()` waits for a `Connected` event that already happened → 60 s timeout → `StartWifiConfigMode()` → `requestAppSetup()` → reboot into the APP SETUP page. Nothing is lost (binding, `is_configed`, Wi-Fi credentials); a reset recovers. Fix options: treat an already connected station as connected in `TryWifiConnect()` (fork patch), or stop the station when the test page closes. Workaround: reboot after a network test. Candidate for an upstream issue. |
 
 ## Later
 

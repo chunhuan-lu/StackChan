@@ -2,7 +2,7 @@
 
 [English](backlog.md) | **中文**
 
-状态说明：`todo`（待做）· `decide`（待决策）· `doing`（进行中）· `done`（已完成）· `dropped`（已放弃）。最后更新：2026-10-20。
+状态说明：`todo`（待做）· `decide`（待决策）· `doing`（进行中）· `done`（已完成）· `dropped`（已放弃）。最后更新：2026-10-21。
 
 ## 已完成
 
@@ -21,6 +21,7 @@
 | B-005 | 不要在睡眠时持有 LVGL 锁 | todo | 小智忙碌时，`_stackchan_update_task` 会拿着锁执行 `vTaskDelay(100)`（`hal.cpp`）。 |
 | B-006 | 恢复热点配网 | todo | 1.6 只允许通过 App（蓝牙）配网，而自编译固件过不了 App 的握手。目前的备用办法：用 nRF Connect 通过蓝牙发送 `setWifi`。 |
 | B-007 | 检查音频任务调度 | todo | 只在说话卡顿复发时处理：`opus_codec`（优先级 2）低于 LVGL 和 stackchan 任务（优先级 3）。 |
+| B-018 | 官方 bug：做完网络测试再进 AI Agent → 重启进入 App 配置页 | todo | 2026-10-21 遇到（[开发日志](devlog/2026-10-21.zh-CN.md)）。「设置 → 网络测试」会直接通过 `WifiManager` 打开并连上 Wi-Fi，退出后不关闭。不重启就进 AI Agent 时，`WifiBoard::TryWifiConnect()` 等待一个早已发生过的 `Connected` 事件 → 60 秒超时 → `StartWifiConfigMode()` → `requestAppSetup()` → 重启进入 APP SETUP 页面。不会丢失任何数据（绑定、`is_configed`、Wi-Fi 密码都在），复位即可恢复。修复思路：在 `TryWifiConnect()` 里把已连接的情况直接当作连接成功（fork 补丁），或者在测试页面关闭时关掉 Wi-Fi。临时办法：做完网络测试先重启。可以考虑给官方提 issue。 |
 
 ## 以后
 
