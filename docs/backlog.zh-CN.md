@@ -21,13 +21,14 @@
 | B-005 | 不要在睡眠时持有 LVGL 锁 | todo | 小智忙碌时，`_stackchan_update_task` 会拿着锁执行 `vTaskDelay(100)`（`hal.cpp`）。 |
 | B-006 | 恢复热点配网 | todo | 1.6 只允许通过 App（蓝牙）配网，而自编译固件过不了 App 的握手。目前的备用办法：用 nRF Connect 通过蓝牙发送 `setWifi`。 |
 | B-007 | 检查音频任务调度 | todo | 只在说话卡顿复发时处理：`opus_codec`（优先级 2）低于 LVGL 和 stackchan 任务（优先级 3）。 |
+| B-019 | 待机、供电与触摸改进 | doing | [REQ-004](requirements/REQ-004-standby-power-touch.zh-CN.md)，分支 `fix/standby-power`：睡眠亮度分暗/亮两档（5 / 45）并渐变、睡着时点屏幕叫醒、过滤滑动、Home 重启前提示、按 VBUS 判断外部供电并记录供电日志（含 INA226 电池电流）、插 USB 时不进省电、记录复位原因、崩溃转储。等待真机验证。 |
 | B-018 | 官方 bug：做完网络测试再进 AI Agent → 重启进入 App 配置页 | todo | 2026-10-21 遇到（[开发日志](devlog/2026-10-21.zh-CN.md)）。「设置 → 网络测试」会直接通过 `WifiManager` 打开并连上 Wi-Fi，退出后不关闭。不重启就进 AI Agent 时，`WifiBoard::TryWifiConnect()` 等待一个早已发生过的 `Connected` 事件 → 60 秒超时 → `StartWifiConfigMode()` → `requestAppSetup()` → 重启进入 APP SETUP 页面。不会丢失任何数据（绑定、`is_configed`、Wi-Fi 密码都在），复位即可恢复。修复思路：在 `TryWifiConnect()` 里把已连接的情况直接当作连接成功（fork 补丁），或者在测试页面关闭时关掉 Wi-Fi。临时办法：做完网络测试先重启。可以考虑给官方提 issue。 |
 
 ## 以后
 
 | 编号 | 事项 | 状态 | 说明 |
 |---|---|---|---|
-| B-010 | NAS 上的局域网 bridge，以及给 Claude Code 用的 MCP 工具 | todo | 播报、表情、动作、查询状态；只在选定的项目或会话中启用；按角色分配令牌；外网只通过 Tailscale 访问。 |
+| B-010 | Claude Code 状态机器人 | decide | 设计草稿 [REQ-003](requirements/REQ-003-claude-code-status.zh-CN.md)：Claude Code hook → sc-agent（Windows 上的 Python，WSL 里的会话也走它）→ 通过 USB 通道连机器人；第二期经 NAS 上的 Mosquitto 中转（静态 IP、自签 CA）；第三期通过小智 MCP 接入点语音问进度。按项目或会话选择接入；永远不能批准授权请求。 |
 | B-011 | 待机行为（第一批） | doing | 由心情驱动的行为调度器：08–23 点作息、天黑睡觉、摸头/拿起/倾斜反应、只动屏幕的小动作、心情灯；静音且安静。已在 `feat/idle-behavior` 分支实现；2026-10-20 第一次真机测试，之后做了调整（触摸静默期、照度阈值、墨尔本时区）。其余验收测试待做。见 [REQ-002](requirements/REQ-002-idle-behaviour.zh-CN.md)。 |
 | B-017 | 待机行为（第二批） | todo | 敲桌子检测、跟着音乐点头（需要从小智拿麦克风音量）、倾斜时头部保持水平（IMU 坐标轴已标定：重力在 +Y，俯仰绕 X 轴）、内心状态持久化。 |
 | B-012 | 设备端人脸检测与跟踪 | todo | ESP-DL `human_face_detect`；缓冲区和任务栈放在 PSRAM；对话时暂停；先做原型验证内存和帧率。 |
