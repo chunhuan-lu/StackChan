@@ -27,7 +27,8 @@ Status: `todo` · `decide` (needs a decision) · `doing` · `done` · `dropped`.
 | ID | Item | Status | Notes |
 |---|---|---|---|
 | B-010 | LAN bridge on NAS + MCP tools for Claude Code | todo | Speak / emote / gesture / status; enabled only in selected projects or sessions; role-based tokens; remote access through Tailscale only. |
-| B-011 | Idle behaviour v2 | todo | Observation points, eyes move before the head, new expressions (surprised, curious), sleep when the room is dark. |
+| B-011 | Idle behaviour, batch 1 | doing | Mood-driven director: schedule 08–23, sleep in the dark, touch/pick-up/tilt reactions, screen-only micro animations, mood light; silent and quiet. Implemented on `feat/idle-behavior`, builds; waiting for on-device verification. See [REQ-002](requirements/REQ-002-idle-behaviour.md). |
+| B-017 | Idle behaviour, batch 2 | todo | Knock detection (tap the table), head-bob to music (needs mic level from xiaozhi), head levelling on tilt (after IMU axis calibration), persist the inner state. |
 | B-012 | On-device face detection and tracking | todo | ESP-DL `human_face_detect`; buffers and stacks in PSRAM; pause during conversations; prototype memory and frame rate first. |
 | B-013 | Desk object recognition | todo | NAS: YOLO (OpenVINO) + reaction rules; small VLM only for new or unknown objects. |
 | B-014 | Extra ways to start and end a conversation | todo | Head touch, tap/shake (IMU), voice "exit" tool, offline command words (depends on B-001). |
