@@ -1078,9 +1078,28 @@ menu "StackChan fork options"
             Must be higher than the darkness threshold (hysteresis).
 
     config SC_IDLE_SLEEP_BACKLIGHT
-        int "Backlight while sleeping (0-100)"
+        int "Backlight while sleeping in the dark (0-100)"
         range 0 100
         default 5
+        help
+            Used while asleep when the room is dark (below SC_IDLE_DARK_LUX) or no light sensor
+            reading is available. The AXP2101 drives the backlight from DLDO1 in 100 mV steps:
+            1-12 = 2.5 V (dimmest), 13-24 = 2.6 V, 25-37 = 2.7 V, 38-49 = 2.8 V, 50-62 = 2.9 V,
+            63-74 = 3.0 V, 75-87 = 3.1 V, 88-99 = 3.2 V, 100 = 3.3 V; 0 switches it off.
+
+    config SC_IDLE_SLEEP_BACKLIGHT_LIT
+        int "Backlight while sleeping with the lights on (0-100)"
+        range 0 100
+        default 45
+        help
+            Used while asleep (night schedule, darkness hold-off or nap) when the ambient light is
+            above SC_IDLE_BRIGHT_LUX. Never brighter than the normal brightness. Same steps as above;
+            Settings > Brightness 30 % / 45 % preview 2.7 V / 2.8 V.
+
+    config SC_IDLE_BACKLIGHT_FADE_MS
+        int "Sleep backlight fade time per 100 mV step (ms, 0 = instant)"
+        range 0 2000
+        default 300
 
     config SC_IDLE_LED_MAX
         int "Mood light maximum channel value (0-255)"
@@ -1088,5 +1107,26 @@ menu "StackChan fork options"
         default 24
 
     endif # SC_IDLE_DIRECTOR
+
+    config SC_EXT_POWER_NO_STANDBY
+        bool "No power-save sleep or auto power-off while USB power is present"
+        default y
+        help
+            Detect external power from the AXP2101 VBUS-good flag (debounced) instead of the
+            battery current direction, log the power state at boot and on every change, and keep
+            the upstream power-save timer (sleepy face after 5 min, power-off after the idle
+            shutdown time) off while USB power is present, even if the battery helps out.
+            "Allow auto power off while charging" in the AI Agent settings is still honoured.
+            Note: the servos always run from the battery through the body boost converter; USB
+            only recharges it.
+
+    config SC_TOUCH_FIXES
+        bool "AI Agent touch fixes"
+        default y
+        help
+            A tap on the sleeping face wakes it instead of starting a conversation, a swipe from the
+            bottom edge (the Home gesture) no longer toggles the conversation, the Home button
+            ignores clicks while it slides in or out and shows "Going home..." before the restart,
+            and implausible touch controller samples are dropped.
 
 endmenu

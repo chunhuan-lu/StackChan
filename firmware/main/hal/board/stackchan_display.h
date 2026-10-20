@@ -48,6 +48,9 @@ public:
     virtual void SetTheme(Theme* theme) override;
     virtual void SetStatus(const char* status) override;
     virtual void ShowNotification(const char* notification, int duration_ms = 3000) override;
+#if CONFIG_SC_IDLE_DIRECTOR
+    virtual void SetPowerSaveMode(bool on) override;  // [StackChan fork]
+#endif
 
     void LvglLock();
     void LvglUnlock();

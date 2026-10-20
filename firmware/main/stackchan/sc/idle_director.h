@@ -44,6 +44,10 @@ public:
 
     void _update(Modifiable& stackchan) override;
 
+    // Called from the avatar's screen-click handler (LVGL context). Returns true if the robot is
+    // asleep; the tap then wakes it on the next update instead of starting a conversation.
+    static bool requestScreenWake();
+
 private:
     enum class Phase { Awake, Sleeping };
     enum class SleepReason { None, Night, Dark, Nap };
@@ -113,6 +117,8 @@ private:
     void update_led(uint32_t now);
     void write_led(uint8_t r, uint8_t g, uint8_t b);
     void restore_backlight();
+    int sleep_backlight() const;
+    void update_backlight(uint32_t now);
     bool is_night() const;
 
     int _activity;
@@ -128,6 +134,10 @@ private:
     uint32_t _nap_until        = 0;
     int _saved_backlight       = -1;
     uint32_t _resleep_pose_at  = 0;
+    int _bl_target             = -1;  // backlight the sleep pose fades to, -1 = none
+    int _bl_logged             = -1;
+    uint32_t _next_bl_step     = 0;
+    bool _bl_lit               = false;  // room lit enough for the brighter sleep backlight
 
     std::unique_ptr<FaceAnimation> _anim;
     AnimPurpose _anim_purpose = AnimPurpose::Idle;

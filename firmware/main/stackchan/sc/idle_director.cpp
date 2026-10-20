@@ -10,6 +10,7 @@
 #include <sdkconfig.h>
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <ctime>
 
 #if CONFIG_SC_IDLE_DIRECTOR
@@ -30,6 +31,7 @@ static constexpr uint32_t kDarkHoldMs       = 60 * 1000;   // darkness needed be
 static constexpr uint32_t kBrightHoldMs     = 5 * 1000;    // light needed before waking up
 static constexpr uint32_t kNapMs            = 10 * 60 * 1000;
 static constexpr uint32_t kStrokeRestoreMs  = 3600;        // HeadPetModifier restores after 3000 ms
+static constexpr uint32_t kBacklightDarkMs  = 10 * 1000;   // darkness needed before dimming a sleeping face
 
 // Touch
 static constexpr uint32_t kTapMaxMs       = 450;
@@ -60,10 +62,27 @@ static constexpr int kSleepEyes = 6;
 
 static constexpr int kMoodLeds[] = {1, 2, 3, 4, 5, 7, 8, 9, 10, 11};
 
+// Screen taps arrive from the avatar's click handler; both sides run under the LVGL lock, the
+// atomics only keep the hand-over explicit.
+static std::atomic<bool> s_asleep{false};
+static std::atomic<bool> s_screen_wake{false};
+
 IdleMood& GetIdleMood()
 {
     static IdleMood mood;
     return mood;
+}
+
+// Mirrors Pmic::SetBrightness (hal/board/stackchan.cc): DLDO1 code = 20 + b * 8 / 100, 0 = off.
+static int backlight_step(int b)
+{
+    return b <= 0 ? -1 : std::min(b, 100) * 8 / 100;
+}
+
+// Lowest brightness value that selects a step: 1, 13, 25, 38, 50, 63, 75, 88, 100.
+static int backlight_of_step(int step)
+{
+    return step < 0 ? 0 : std::max(1, (step * 100 + 7) / 8);
 }
 
 static int rnd(int a, int b)
@@ -104,6 +123,8 @@ static float clock_energy(int hour)
 
 IdleDirectorModifier::IdleDirectorModifier(int activityLevel) : _activity(std::clamp(activityLevel, 0, 3))
 {
+    s_asleep      = false;
+    s_screen_wake = false;  // a tap left over from a previous director must not wake this one
     _touch_conn = GetHAL().onHeadPetGesture.connect([this](HeadPetGesture gesture) {
         std::lock_guard<std::mutex> lock(_event_mutex);
         if (_events.size() < 16) {
@@ -152,9 +173,20 @@ IdleDirectorModifier::~IdleDirectorModifier()
         }
     }
 
+    s_asleep      = false;
+    s_screen_wake = false;
     restore_backlight();
     write_led(0, 0, 0);
     mclog::tagInfo(_tag, "stopped");
+}
+
+bool IdleDirectorModifier::requestScreenWake()
+{
+    if (!s_asleep) {
+        return false;
+    }
+    s_screen_wake = true;
+    return true;
 }
 
 /* ---------------------------------------------------------------------------------------------- */
@@ -185,6 +217,12 @@ void IdleDirectorModifier::_update(Modifiable& sc)
     }
 
     handle_touch_events(sc, now);
+    if (s_screen_wake.exchange(false) && _phase == Phase::Sleeping) {
+        // Tapping the dim sleeping face used to start a conversation instead (device test 2026-10-21).
+        mclog::tagInfo(_tag, "screen tap while asleep");
+        note_interaction(now);
+        wake_up(sc, now, false);
+    }
     if (_shake_event.exchange(false)) {
         on_shake(sc, now);
     }
@@ -232,6 +270,11 @@ void IdleDirectorModifier::_update(Modifiable& sc)
         _bubble_active = false;
         sc.avatar().clearSpeech();
     }
+
+    if (_sleep_pose) {
+        _bl_target = sleep_backlight();  // follows the room light while asleep
+    }
+    update_backlight(now);
 
     if (now >= _next_led) {
         _next_led = now + kLedIntervalMs;
@@ -557,6 +600,9 @@ void IdleDirectorModifier::poll_light(uint32_t now)
         _dark = false;
         return;
     }
+    if (_lux < 0.0f) {
+        _bl_lit = lux > CONFIG_SC_IDLE_DARK_LUX;  // first sample
+    }
     _lux = lux;
 
     if (lux < CONFIG_SC_IDLE_DARK_LUX) {
@@ -576,6 +622,14 @@ void IdleDirectorModifier::poll_light(uint32_t now)
         }
     } else {
         _dark_since = _bright_since = 0;  // inside the hysteresis band: keep the state
+    }
+
+    // Sleep backlight: brighten as soon as the room is lit, dim after a shorter darkness hold than
+    // the one that sends the robot to sleep.
+    if (lux > CONFIG_SC_IDLE_BRIGHT_LUX) {
+        _bl_lit = true;
+    } else if (_dark_since && now - _dark_since >= kBacklightDarkMs) {
+        _bl_lit = false;
     }
 
     if (now >= _next_lux_log) {
@@ -713,15 +767,17 @@ void IdleDirectorModifier::apply_sleep_pose(Modifiable& sc, uint32_t now)
         _sleep_pose = true;
         if (_saved_backlight < 0) {
             _saved_backlight = GetHAL().getBackLightBrightness();
-            GetHAL().setBackLightBrightness(CONFIG_SC_IDLE_SLEEP_BACKLIGHT, false);
         }
+        s_asleep = _phase == Phase::Sleeping;
     }
+    _bl_target = sleep_backlight();  // update_backlight() fades towards it
 }
 
 void IdleDirectorModifier::leave_sleep_pose(Modifiable& sc)
 {
     _sleep_pose      = false;
     _resleep_pose_at = 0;
+    s_asleep         = false;  // every way out of sleep (wake-up, pick-up, shake) passes here
     restore_backlight();
     if (_bubble_active) {
         _bubble_active = false;
@@ -1122,10 +1178,44 @@ void IdleDirectorModifier::write_led(uint8_t r, uint8_t g, uint8_t b)
 
 void IdleDirectorModifier::restore_backlight()
 {
+    _bl_target = -1;
+    _bl_logged = -1;
     if (_saved_backlight >= 0) {
-        GetHAL().setBackLightBrightness(static_cast<uint8_t>(_saved_backlight), false);
+        GetHAL().setBackLightBrightness(static_cast<uint8_t>(_saved_backlight), false);  // instant
         _saved_backlight = -1;
     }
+}
+
+int IdleDirectorModifier::sleep_backlight() const
+{
+    int target = (_lux >= 0.0f && _bl_lit) ? CONFIG_SC_IDLE_SLEEP_BACKLIGHT_LIT : CONFIG_SC_IDLE_SLEEP_BACKLIGHT;
+    if (_saved_backlight >= 0) {
+        target = std::min(target, _saved_backlight);  // sleeping never brightens the screen (0 stays off)
+    }
+    return target;
+}
+
+void IdleDirectorModifier::update_backlight(uint32_t now)
+{
+    if (_bl_target < 0 || now < _next_bl_step) {
+        return;
+    }
+    if (_bl_target != _bl_logged) {
+        _bl_logged = _bl_target;
+        mclog::tagInfo(_tag, "sleep backlight {} ({:.1f} lux)", _bl_target, _lux);
+    }
+    const int current = GetHAL().getBackLightBrightness();
+    if (current == _bl_target) {
+        return;
+    }
+    int next       = _bl_target;
+    const int from = backlight_step(current);
+    const int to   = backlight_step(_bl_target);
+    if (CONFIG_SC_IDLE_BACKLIGHT_FADE_MS > 0 && from >= 0 && to >= 0 && std::abs(to - from) > 1) {
+        next = backlight_of_step(from + (to > from ? 1 : -1));  // one 100 mV step at a time
+    }
+    GetHAL().setBackLightBrightness(static_cast<uint8_t>(next), false);
+    _next_bl_step = now + CONFIG_SC_IDLE_BACKLIGHT_FADE_MS;
 }
 
 }  // namespace stackchan::sc

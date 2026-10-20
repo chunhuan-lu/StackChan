@@ -34,6 +34,21 @@ index e67514b..82e3a87 100644
          }
  
          // No new version, mark the current version as valid
+diff --git a/main/boards/common/backlight.cc b/main/boards/common/backlight.cc
+index c62fd7a..32049f6 100644
+--- a/main/boards/common/backlight.cc
++++ b/main/boards/common/backlight.cc
+@@ -48,7 +48,9 @@ void Backlight::SetBrightness(uint8_t brightness, bool permanent) {
+         brightness = 100;
+     }
+ 
+-    if (brightness_ == brightness) {
++    // [StackChan fork] Also retarget a pending transition: two calls in a row from the esp_timer task
++    // (e.g. restore then dim) must end at the last value, not at the first one.
++    if (brightness_ == brightness && target_brightness_ == brightness) {
+         return;
+     }
+ 
 diff --git a/main/mcp_server.cc b/main/mcp_server.cc
 index 7cd7ba0..8d5251c 100644
 --- a/main/mcp_server.cc

@@ -27,3 +27,17 @@ CONFIG_SC_IDLE_DIRECTOR=y
 CONFIG_SC_IDLE_WAKE_HOUR=8
 CONFIG_SC_IDLE_SLEEP_HOUR=23
 CONFIG_SC_IDLE_HEAD_MOVES_PER_HOUR=20
+# Sleep backlight (REQ-004): dimmest step in a dark room, 2.8 V with the lights on.
+CONFIG_SC_IDLE_SLEEP_BACKLIGHT=5
+CONFIG_SC_IDLE_SLEEP_BACKLIGHT_LIT=45
+
+# Standby, power and touch fixes (REQ-004).
+CONFIG_SC_EXT_POWER_NO_STANDBY=y
+CONFIG_SC_TOUCH_FIXES=y
+
+# Core dumps to the existing 64 KB coredump partition (read with idf.py coredump-info). Coredump
+# log strings would cost ~5 KB of internal RAM, so they are off.
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+CONFIG_ESP_COREDUMP_CHECKSUM_CRC32=y
+# CONFIG_ESP_COREDUMP_LOGS is not set

@@ -310,6 +310,9 @@ public:
     bool getImuAccel(float& x, float& y, float& z);
     // Ambient light from the LTR-553ALS in lux; the sensor is initialised on first use.
     bool getAmbientLux(float& lux);
+    // USB power present (debounced VBUS with SC_EXT_POWER_NO_STANDBY). The servos still run from the
+    // battery, which USB recharges.
+    bool isOnExternalPower();
 
 private:
     bool _xiaozhi_start_requested = false;

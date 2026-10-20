@@ -9,6 +9,7 @@
 #include <esp_lvgl_port.h>
 #include <esp_psram.h>
 #include <vector>
+#include <cstdlib>
 #include <cstring>
 #include <src/misc/cache/lv_cache.h>
 #include <settings.h>
@@ -19,6 +20,8 @@
 #include <hal/hal.h>
 #if CONFIG_SC_IDLE_DIRECTOR
 #include <stackchan/sc/idle_director.h>  // [StackChan fork]
+#include "application.h"
+#include "board.h"
 #endif
 
 using namespace stackchan;
@@ -256,14 +259,47 @@ void StackChanAvatarDisplay::SetupUI()
 
     auto avatar = std::make_unique<DefaultAvatar>();
     avatar->init(lv_screen_active());
+#if CONFIG_SC_TOUCH_FIXES
+    // [StackChan fork] Remember where a press started, so that a swipe (e.g. the Home gesture from the
+    // bottom edge) is not taken as a tap: LVGL sends CLICKED after a drag when nothing scrolls.
+    static lv_point_t press_point = {-1, -1};
+    lv_obj_add_event_cb(
+        avatar->getPanel()->get(),
+        [](lv_event_t*) {
+            if (auto* indev = lv_indev_active()) {
+                lv_indev_get_point(indev, &press_point);
+            }
+        },
+        LV_EVENT_PRESSED, nullptr);
+#endif
     avatar->getPanel()->onClick().connect([]() {
+#if CONFIG_SC_TOUCH_FIXES
+        lv_point_t point = press_point;
+        if (auto* indev = lv_indev_active()) {
+            lv_indev_get_point(indev, &point);
+        }
+        const int moved = std::abs(point.x - press_point.x) + std::abs(point.y - press_point.y);
+        if (press_point.y >= 220 || moved > 30) {
+            ESP_LOGI(TAG, "Screen swipe ignored (%d,%d -> %d,%d)", (int)press_point.x, (int)press_point.y,
+                     (int)point.x, (int)point.y);
+            return;
+        }
+#if CONFIG_SC_IDLE_DIRECTOR
+        if (stackchan::sc::IdleDirectorModifier::requestScreenWake()) {
+            ESP_LOGI(TAG, "Screen tap: wake the sleeping face");
+            return;
+        }
+#endif
+#endif
         static uint32_t last_toggle_tick = 0;
         const uint32_t now               = GetHAL().millis();
         if (last_toggle_tick != 0 && now - last_toggle_tick < 2000) {
+            ESP_LOGI(TAG, "Screen tap ignored (debounce)");  // [StackChan fork]
             return;
         }
 
         if (hal_bridge::is_xiaozhi_ready()) {
+            ESP_LOGI(TAG, "Screen tap: toggle chat");  // [StackChan fork]
             last_toggle_tick = now;
             hal_bridge::toggle_xiaozhi_chat_state();
         }
@@ -577,6 +613,37 @@ void StackChanAvatarDisplay::SetStatus(const char* status)
         avatar.setSpeech("");
     }
 }
+
+#if CONFIG_SC_IDLE_DIRECTOR
+// [StackChan fork] Upstream power save (battery only, or with "auto power off while charging") shows
+// the sleepy face, which removes the idle director; its destructor restores the normal brightness.
+// Keep the sleepy face dim, and bring the director back when power save ends (e.g. USB plugged in)
+// instead of waiting for the next conversation.
+void StackChanAvatarDisplay::SetPowerSaveMode(bool on)
+{
+    LvglDisplay::SetPowerSaveMode(on);  // "sleepy" / "neutral"
+    if (on) {
+        GetHAL().setBackLightBrightness(CONFIG_SC_IDLE_SLEEP_BACKLIGHT, false);  // OnExitSleepMode restores
+        // A wake word or tap may have ended power save while we waited for the display lock; its
+        // RestoreBrightness then ran before the dim above.
+        if (Application::GetInstance().GetDeviceState() != kDeviceStateIdle) {
+            Board::GetInstance().GetBacklight()->RestoreBrightness();
+        }
+        return;
+    }
+    if (Application::GetInstance().GetDeviceState() != kDeviceStateIdle) {
+        return;  // SetStatus(STANDBY) re-creates the director after the conversation
+    }
+    DisplayLockGuard lock(this);
+    if (idle_motion_modifier_id_ < 0 && _is_xiaozhi_idle && GetStackChan().hasAvatar()) {
+        ESP_LOGI(TAG, "Power save ended: restart idle director");
+        is_sleeping_ = false;
+        GetStackChan().avatar().setSpeech("");  // drop the power-save "Zzz" bubble
+        idle_motion_modifier_id_ =
+            GetStackChan().addModifier(std::make_unique<stackchan::sc::IdleDirectorModifier>(idle_motion_level_));
+    }
+}
+#endif
 
 void StackChanAvatarDisplay::ShowNotification(const char* notification, int duration_ms)
 {

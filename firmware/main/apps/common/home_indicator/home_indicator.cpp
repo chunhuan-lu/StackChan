@@ -67,6 +67,8 @@ public:
 
                 // 判断标准：向上位移足够，且角度偏垂直
                 if (delta_y > _swipe_min_dist && delta_y > delta_x) {
+                    mclog::tagInfo("HomeIndicator", "home gesture ({},{}) -> ({},{})", _start_point.x,
+                                   _start_point.y, curr_point.x, curr_point.y);  // [StackChan fork]
                     if (onGesture) {
                         onGesture();
                     }
@@ -117,7 +119,10 @@ public:
         _btn->setShadowWidth(0);
         _btn->setRadius(18);
         _btn->addFlag(LV_OBJ_FLAG_FLOATING);
-        _btn->onClick().connect([&]() { _is_clicked = true; });
+        _btn->onClick().connect([&]() {
+            mclog::tagInfo("HomeIndicator", "home button clicked");  // [StackChan fork]
+            _is_clicked = true;
+        });
 
         _icon = std::make_unique<Image>(_btn->get());
         _icon->align(LV_ALIGN_CENTER, 0, -10);
@@ -166,6 +171,14 @@ public:
         return _is_hidden;
     }
 
+    // [StackChan fork] Hide at once, without the slide-out animation (used right before a restart).
+    void hideNow()
+    {
+        _btn->setHidden(true);
+        _bg_mask->setHidden(true);
+        _is_hidden = true;
+    }
+
     bool isClicked()
     {
         if (_is_clicked) {
@@ -196,6 +209,16 @@ private:
 class HomeIndicator {
 public:
     std::function<void(void)> onGoHome;
+    std::function<bool(void)> willRestart;  // [StackChan fork] nullptr = going home always restarts
+
+#if CONFIG_SC_TOUCH_FIXES
+    ~HomeIndicator()
+    {
+        if (_going_home) {
+            lv_obj_delete(_going_home);  // never outlive the indicator (Settings goes home without a restart)
+        }
+    }
+#endif
 
     void init(lv_obj_t* parent, uint32_t colorButton, uint32_t colorBorder)
     {
@@ -211,10 +234,29 @@ public:
 
     void update()
     {
+#if CONFIG_SC_TOUCH_FIXES
+        // [StackChan fork] The "Going home..." overlay is drawn by the LVGL task; go home once it had time
+        // to show. onGoHome may destroy this object, so return right after it.
+        if (_go_home_at) {
+            if (GetHAL().millis() >= _go_home_at && onGoHome) {
+                _go_home_at = 0;
+                onGoHome();
+            }
+            return;
+        }
+        _home_gesture->update();
+        _home_button->update();
+        // Judge a pending click before the button times out, so a click made just before is kept.
+        if (check_go_home()) {
+            return;
+        }
+        update_home_button_visibility();
+#else
         _home_gesture->update();
         _home_button->update();
         update_home_button_visibility();
         check_go_home();
+#endif
     }
 
 private:
@@ -222,6 +264,10 @@ private:
     std::unique_ptr<HomeButton> _home_button;
     uint32_t _button_show_tick = 0;
     bool _is_first_show        = true;
+#if CONFIG_SC_TOUCH_FIXES
+    lv_obj_t* _going_home = nullptr;
+    uint32_t _go_home_at  = 0;
+#endif
 
     void handle_home_gesture()
     {
@@ -239,6 +285,48 @@ private:
         }
     }
 
+#if CONFIG_SC_TOUCH_FIXES
+    // [StackChan fork] Returns true if onGoHome ran (this object may be gone) or is scheduled.
+    bool check_go_home()
+    {
+        if (!_home_button->isClicked()) {
+            return false;
+        }
+        // The button stays clickable while it slides in or out: ignore those clicks, they usually come
+        // from the same touch as the gesture.
+        if (_home_button->isHidden() || GetHAL().millis() - _button_show_tick < 300) {
+            mclog::tagInfo("HomeIndicator", "home click ignored (button sliding)");
+            return false;
+        }
+        if (!willRestart || willRestart()) {
+            show_going_home();
+            _go_home_at = GetHAL().millis() + 300;
+            return true;
+        }
+        if (onGoHome) {
+            onGoHome();
+        }
+        return true;
+    }
+
+    // Going home restarts the device in the AI Agent (xiaozhi cannot be stopped in place) and in most
+    // apps. Say so, otherwise the restart looks like a crash.
+    void show_going_home()
+    {
+        _home_button->hideNow();
+        _going_home = lv_obj_create(lv_layer_top());
+        lv_obj_remove_style_all(_going_home);
+        lv_obj_remove_flag(_going_home, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_size(_going_home, LV_PCT(100), LV_PCT(100));
+        lv_obj_set_style_bg_color(_going_home, lv_color_black(), 0);
+        lv_obj_set_style_bg_opa(_going_home, LV_OPA_70, 0);
+        lv_obj_t* label = lv_label_create(_going_home);
+        lv_label_set_text(label, "Going home...");
+        lv_obj_set_style_text_color(label, lv_color_white(), 0);
+        lv_obj_set_style_text_font(label, &lv_font_montserrat_24, 0);
+        lv_obj_center(label);
+    }
+#else
     void check_go_home()
     {
         if (_home_button->isClicked()) {
@@ -247,6 +335,7 @@ private:
             }
         }
     }
+#endif
 };
 
 /**
@@ -280,6 +369,14 @@ bool is_home_indicator_created()
 void destroy_home_indicator()
 {
     _home_indicator.reset();
+}
+
+// [StackChan fork]
+void set_home_indicator_will_restart(std::function<bool(void)> willRestart)
+{
+    if (_home_indicator) {
+        _home_indicator->willRestart = std::move(willRestart);
+    }
 }
 
 }  // namespace view
