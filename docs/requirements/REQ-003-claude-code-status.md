@@ -2,7 +2,8 @@
 
 **English** | [中文](REQ-003-claude-code-status.zh-CN.md)
 
-Status: **design draft**, not implemented · Backlog: B-010
+Status: phase 1 (USB link, Claude layer, sc-agent, hooks) implemented on `feat/claude-link`, **not yet verified on
+the device**; phases 2–3 are design only · Backlog: B-010
 
 ## Goal
 
@@ -15,9 +16,10 @@ session needs input, without slowing Claude Code down and without depending on t
 - One PC runs Claude Code, often several sessions at once, mostly inside **WSL**, sometimes natively on Windows.
 - A background program may run permanently on the PC; Python is fine (no opaque .exe), started from a .bat / bash script.
 - Only selected sessions take part: a marker file in the project **or** an environment variable at start.
-- No sounds during working hours.
+- No sounds during working hours: weekdays 08:00–18:00 (confirmed), and never at the robot's night.
 - The speech bubble may show the project and the event.
 - The NAS has a static public IP and the router can forward ports (no domain).
+- The voice status (phase 3) may say project names (confirmed).
 
 ## Architecture
 
@@ -86,6 +88,43 @@ Voice (phase 3): robot → xiaozhi cloud → MCP endpoint ◀── outbound fro
 - sc-agent connects to the xiaozhi MCP endpoint and offers a read-only `claude_status` tool ("3 sessions: StackChan
   working, docs waiting for you"). Only project names and states leave the PC, never prompts, output or code.
 
+## USB link protocol v1 (phase 1)
+
+Transport: the robot's native USB-Serial/JTAG port (Windows: VID 303A, PID 1001), 115200 baud nominal. Open with
+DTR and RTS released before `open()` and never toggle them (they reset the chip).
+
+Framing, both directions: one line =
+
+```
+@@sc<compact JSON>*<CRC-32 of the JSON bytes, 8 uppercase hex digits>\n
+```
+
+- CRC-32 is the standard zlib CRC (`zlib.crc32(json_bytes)`; on the device `esp_rom_crc32_le(0, ...)`).
+- JSON is UTF-8, one line, no `\n` inside. Host → device at most 768 bytes of JSON, device → host at most 256.
+- Every other line is log output. A receiver searches for the **last** `@@sc` in a line and the last `*` after it;
+  log text or ANSI colour codes may precede the frame. Lines from the device end with `\r\n`.
+- Invalid frames (bad CRC, bad JSON, too long) are dropped silently.
+
+Messages host → device all carry `"t"` (type) and `"id"` (uint32, strictly increasing within one agent run). The device
+answers each with an ack; the host waits up to 500 ms and retries at most twice with the **same** id (the device
+re-acknowledges a repeated id without applying it again). One message in flight at a time.
+
+| t | Fields | Meaning |
+|---|---|---|
+| `hello` | `v` (1), `agent` (string) | Start of a link. Ack carries `v`, `fw`, `boot` (random per boot), `up` (s). A changed `boot` means the robot restarted: resend the state. Also resets the device's id de-duplication. |
+| `ping` | – | Keepalive, every 2 s. |
+| `state` | `sessions`: list of up to 5 `{slot 0-4, name ≤ 12 chars, st}` | Full snapshot, replaces everything. `st`: `idle`, `work`, `wait`, `done`, `err`. Empty list = Claude layer off. |
+| `event` | `slot`, `ev`, `text` (≤ 40 chars), `snd` (bool, optional) | One-off reaction. `ev`: `needs`, `done`, `fail`, `err`, `compact`. `snd` asks for a short sound; the robot still refuses at night and during conversations. |
+| `clear` | – | Same as an empty `state`. |
+
+Ack (device → host): `{"t":"ack","id":N,"ok":true,"st":"idle|talk|other","boot":B,"n":K}`; on error
+`"ok":false,"err":"..."`. `st` is the robot state: `idle` = AI Agent standby, `talk` = conversation, `other` = launcher
+or another app. `boot` (random per robot boot) and `n` (used session slots on the robot) are in **every** ack: a
+changed `boot` (a restart that kept the USB port open) or an `n` that differs from the agent's last state makes the
+agent resend the state.
+
+Staleness: if the device receives no valid frame for 30 s it drops the sessions (agent stopped or cable unplugged).
+
 ## Event mapping
 
 | Claude Code | Robot | Bubble |
@@ -109,9 +148,38 @@ LED layout: up to 5 sessions, one LED per session, mirrored left (1–5) and rig
 | P2 | Relay on the NAS |
 | P3 | Voice status through the xiaozhi MCP endpoint |
 
+## Phase 1 implementation notes (2026-10-21, decided while the maintainer was asleep)
+
+Firmware (`feat/claude-link`):
+- `main/hal/sc/usb_link.*`: task "sc_usb" on core 1, priority 2, 6 KB PSRAM stack; driver RX ring 1 KB; replies with one
+  `write()` to `/dev/secondary`; started at the end of `Hal::init()` in every mode (the state is only shown in AI Agent
+  standby). `SC_USB_LINK` (default y).
+- `main/stackchan/sc/claude_status.*`: singleton with the 5 slots, an event queue (4 entries, 30 s max age) and the
+  30 s staleness rule.
+- Idle director: while sessions exist they own LEDs 1–5 / 7–11 (slot i = LEDs 1+i and 7+i); short reaction effects
+  (pick-up, petting) still win. Colours: idle dim white, work blue breathing, wait amber blinking, done green (dim after
+  10 min), err red; a failed tool flashes the slot red for 3 s. Sleeping: 35 % brightness.
+- Reactions: needs → doubt face, bubble 8 s, look up and settle, optional popup sound; done → happy, bubble, small nod;
+  fail → sweat, bubble; err → sad, bubble; compact → yawn, bubble. Head moves use the director's servo budget (skipped,
+  face and bubble kept, when no token is left). In the night window (23:00–08:00) only the LEDs react, awake or asleep.
+  "needs" is never dropped: the sound is requested first (played from the main task, not under the LVGL lock), it wakes
+  a sleeping or dozing robot (the wake-up is the gesture) and keeps it awake for the grace period. Other events while
+  asleep: LEDs only. Busy (held, tilted, head touched, another reaction): bubble only.
+- LED colours respect the PY32 driver's RGB565 steps (dim non-zero channels are lifted to the first step).
+- Deviation: during a conversation the director does not exist, so the session LEDs are off; events wait (≤ 30 s) and
+  are shown afterwards.
+- Not in phase 1: subagent spinner, context-usage face (needs the status-line wrapper).
+
+PC side (`tools/sc-agent/`, see its README):
+- `idle_prompt` notifications are ignored (Claude Code sends one about 60 s after every finished answer, which would
+  repeat the call-back each time); `PostToolUse` turns "wait" back into "work" after a permission prompt was answered.
+- Any mapped event re-creates an unknown session (survives an agent restart or the 30 min expiry); ended sessions are
+  ignored for 60 s against late async hooks.
+- Ping only after 2 s without traffic; a missing ack after retries counts as a lost link (hello, then the state again).
+- `/release` auto-reacquires after 30 min (`release_timeout_s`, 0 = wait for `/acquire`).
+- `merge_hooks.py` merges the hook snippet into a settings.json (writes a `.bak`).
+
 ## Open points
 
-- Exact working hours for the quiet rule (default weekdays 08:00–18:00).
-- Whether the voice status (phase 3) may say project names, since it passes the xiaozhi cloud.
 - Prototype checks: USB link frame loss under heavy logging; Windows port release during flashing; WSL interop latency
   for `curl.exe`; RAM of the MQTT client.
