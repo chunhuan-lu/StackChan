@@ -1005,3 +1005,16 @@ menu "BLE prph Configuration"
             Use this option to enable resolving peer's address.
 
 endmenu
+
+# [StackChan fork] Options added by chunhuan-lu/StackChan. Symbols use the SC_ prefix.
+menu "StackChan fork options"
+
+    config SC_DISABLE_AUTO_OTA
+        bool "Disable automatic firmware OTA in AI Agent mode"
+        default y
+        help
+            Upstream xiaozhi installs any newer firmware reported by the OTA server every time the
+            AI Agent mode starts, which would overwrite self-built firmware. When enabled, a newer
+            version is only logged. Manual update from Settings > About is not affected.
+
+endmenu

@@ -1,0 +1,61 @@
+diff --git a/main/application.cc b/main/application.cc
+index e67514b..1f19ec6 100644
+--- a/main/application.cc
++++ b/main/application.cc
+@@ -435,10 +435,16 @@ void Application::CheckNewVersion() {
+         retry_delay = 10; // Reset retry delay
+ 
+         if (ota_->HasNewVersion()) {
++#if CONFIG_SC_DISABLE_AUTO_OTA
++            // [StackChan fork] Keep self-built firmware: report the new version but do not install it.
++            ESP_LOGW(TAG, "New firmware %s available, automatic OTA disabled (CONFIG_SC_DISABLE_AUTO_OTA)",
++                     ota_->GetFirmwareVersion().c_str());
++#else
+             if (UpgradeFirmware(ota_->GetFirmwareUrl(), ota_->GetFirmwareVersion())) {
+                 return; // This line will never be reached after reboot
+             }
+             // If upgrade failed, continue to normal operation
++#endif
+         }
+ 
+         // No new version, mark the current version as valid
+diff --git a/scripts/build_default_assets.py b/scripts/build_default_assets.py
+index 9ca1464..7d29b3d 100755
+--- a/scripts/build_default_assets.py
++++ b/scripts/build_default_assets.py
+@@ -463,7 +463,7 @@ def read_wakenet_from_sdkconfig(sdkconfig_path):
+         return []
+         
+     models = []
+-    with io.open(sdkconfig_path, "r") as f:
++    with io.open(sdkconfig_path, "r", encoding="utf-8") as f:
+         for label in f:
+             label = label.strip("\n")
+             if 'CONFIG_SR_WN' in label and '#' not in label[0]:
+@@ -488,7 +488,7 @@ def read_multinet_from_sdkconfig(sdkconfig_path):
+         print(f"Warning: sdkconfig file not found: {sdkconfig_path}")
+         return []
+         
+-    with io.open(sdkconfig_path, "r") as f:
++    with io.open(sdkconfig_path, "r", encoding="utf-8") as f:
+         models_string = ''
+         for label in f:
+             label = label.strip("\n")
+@@ -549,7 +549,7 @@ def read_wake_word_type_from_sdkconfig(sdkconfig_path):
+         'wake_word_disabled': False
+     }
+     
+-    with io.open(sdkconfig_path, "r") as f:
++    with io.open(sdkconfig_path, "r", encoding="utf-8") as f:
+         for line in f:
+             line = line.strip("\n")
+             if line.startswith('#'):
+@@ -578,7 +578,7 @@ def read_custom_wake_word_from_sdkconfig(sdkconfig_path):
+         return None
+         
+     config_values = {}
+-    with io.open(sdkconfig_path, "r") as f:
++    with io.open(sdkconfig_path, "r", encoding="utf-8") as f:
+         for line in f:
+             line = line.strip("\n")
+             if line.startswith('#') or '=' not in line:

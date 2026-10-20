@@ -8,13 +8,18 @@ add_definitions(-DFIRMWARE_VERSION=\"${PROJECT_VER}\")
 # Add this line to disable the specific warning
 add_compile_options(-Wno-missing-field-initializers)
 
+# [StackChan fork] Fork overrides live in sdkconfig.defaults.sc and are applied after the upstream defaults.
+set(SDKCONFIG_DEFAULTS
+    "${CMAKE_CURRENT_SOURCE_DIR}/sdkconfig.defaults;${CMAKE_CURRENT_SOURCE_DIR}/sdkconfig.defaults.sc"
+    CACHE STRING "ESP-IDF sdkconfig default files" FORCE)
+
 # Auto-load a local sdkconfig overlay (git-ignored) when present. Lets
 # self-hosted / custom deployments pin CONFIG_STACKCHAN_SERVER_URL,
 # CONFIG_OTA_URL, etc. without touching committed defaults.
-# Manual equivalent: SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.local" idf.py build
+# Manual equivalent: SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.sc;sdkconfig.defaults.local" idf.py build
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/sdkconfig.defaults.local")
     set(SDKCONFIG_DEFAULTS
-        "${CMAKE_CURRENT_SOURCE_DIR}/sdkconfig.defaults;${CMAKE_CURRENT_SOURCE_DIR}/sdkconfig.defaults.local"
+        "${CMAKE_CURRENT_SOURCE_DIR}/sdkconfig.defaults;${CMAKE_CURRENT_SOURCE_DIR}/sdkconfig.defaults.sc;${CMAKE_CURRENT_SOURCE_DIR}/sdkconfig.defaults.local"
         CACHE STRING "ESP-IDF sdkconfig default files (auto-extended with local overlay)" FORCE)
     message(STATUS "StackChan: detected sdkconfig.defaults.local, applying overlay")
 endif()
