@@ -17,6 +17,9 @@
 #include <stackchan/stackchan.h>
 #include <assets/lang_config.h>
 #include <hal/hal.h>
+#if CONFIG_SC_IDLE_DIRECTOR
+#include <stackchan/sc/idle_director.h>  // [StackChan fork]
+#endif
 
 using namespace stackchan;
 using namespace stackchan::avatar;
@@ -536,10 +539,17 @@ void StackChanAvatarDisplay::SetStatus(const char* status)
         // Start idle motion
         ESP_LOGW(TAG, "Start idle motion");
         if (idle_motion_modifier_id_ < 0) {
+#if CONFIG_SC_IDLE_DIRECTOR
+            // [StackChan fork] The idle director replaces random head motion and eye wandering; it
+            // handles activity level 0 itself and lives in the idle motion slot.
+            idle_motion_modifier_id_ = stackchan.addModifier(
+                std::make_unique<stackchan::sc::IdleDirectorModifier>(idle_motion_level_));
+#else
             if (idle_motion_level_ > 0) {
                 CreateIdleMotionModifier();
             }
             idle_expression_modifier_id_ = stackchan.addModifier(std::make_unique<IdleExpressionModifier>());
+#endif
         }
 
         _is_xiaozhi_idle = true;

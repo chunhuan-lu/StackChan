@@ -1017,4 +1017,65 @@ menu "StackChan fork options"
             AI Agent mode starts, which would overwrite self-built firmware. When enabled, a newer
             version is only logged. Manual update from Settings > About is not affected.
 
+    config SC_DEFAULT_TIMEZONE
+        string "Default timezone (POSIX TZ)"
+        default "CST-8"
+        help
+            Used until a timezone is chosen in Settings > System (upstream default: GMT0).
+
+    config SC_IDLE_DIRECTOR
+        bool "Idle behaviour director in AI Agent mode"
+        default y
+        help
+            Replaces the random idle head motion with a mood-driven director: daily schedule,
+            sleeping in the dark, head-touch and pick-up reactions, screen-only micro animations
+            and a mood light. Silent: it never plays sounds.
+
+    if SC_IDLE_DIRECTOR
+
+    config SC_IDLE_WAKE_HOUR
+        int "Wake-up hour (local time)"
+        range 0 23
+        default 8
+
+    config SC_IDLE_SLEEP_HOUR
+        int "Sleep hour (local time)"
+        range 0 23
+        default 23
+
+    config SC_IDLE_HEAD_MOVES_PER_HOUR
+        int "Spontaneous head moves per hour at the default activity level"
+        range 0 120
+        default 20
+        help
+            Servo budget for spontaneous looking around. The idle activity level from the
+            AI Agent settings scales it (0: none, 1: x0.5, 2: x1, 3: x2). Eye movements on the
+            screen are not limited.
+
+    config SC_IDLE_DARK_LUX
+        int "Darkness threshold (lux)"
+        range 0 1000
+        default 5
+        help
+            The robot falls asleep after the ambient light stays below this value for one minute.
+
+    config SC_IDLE_BRIGHT_LUX
+        int "Light-on threshold (lux)"
+        range 1 2000
+        default 20
+        help
+            Must be higher than the darkness threshold (hysteresis).
+
+    config SC_IDLE_SLEEP_BACKLIGHT
+        int "Backlight while sleeping (0-100)"
+        range 0 100
+        default 5
+
+    config SC_IDLE_LED_MAX
+        int "Mood light maximum channel value (0-255)"
+        range 0 255
+        default 24
+
+    endif # SC_IDLE_DIRECTOR
+
 endmenu

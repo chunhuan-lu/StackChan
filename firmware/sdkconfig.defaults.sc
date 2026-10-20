@@ -18,3 +18,10 @@ CONFIG_SR_WN_WN9_HISTACKCHAN_TTS3=n
 
 # Do not let the OTA server replace self-built firmware (patches/xiaozhi-esp32-fork.patch).
 CONFIG_SC_DISABLE_AUTO_OTA=y
+
+# Idle behaviour director (REQ-002): silent, quiet, awake 08:00-23:00 local time.
+CONFIG_SC_DEFAULT_TIMEZONE="CST-8"
+CONFIG_SC_IDLE_DIRECTOR=y
+CONFIG_SC_IDLE_WAKE_HOUR=8
+CONFIG_SC_IDLE_SLEEP_HOUR=23
+CONFIG_SC_IDLE_HEAD_MOVES_PER_HOUR=20

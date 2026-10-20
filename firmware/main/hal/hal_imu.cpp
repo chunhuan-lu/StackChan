@@ -9,10 +9,16 @@
 #include "utils/motion_detector/motion_detector.h"
 #include <mooncake_log.h>
 #include <memory>
+#include <mutex>
 
 static const std::string_view _tag = "HAL-IMU";
 
 static std::unique_ptr<BMI270> _bmi270;
+
+// [StackChan fork] Latest accelerometer sample for Hal::getImuAccel().
+static std::mutex _accel_mutex;
+static float _accel[3]    = {0, 0, 0};
+static bool _accel_valid = false;
 
 static void _imu_task(void* param)
 {
@@ -23,6 +29,13 @@ static void _imu_task(void* param)
         if (_bmi270 && _bmi270->update()) {
             auto& data = _bmi270->getData();
             // mclog::debug("IMU Accel: {:.2f}\t{:.2f}\t{:.2f}", data.accel_x, data.accel_y, data.accel_z);
+            {
+                std::lock_guard<std::mutex> lock(_accel_mutex);
+                _accel[0]    = data.accel_x;
+                _accel[1]    = data.accel_y;
+                _accel[2]    = data.accel_z;
+                _accel_valid = true;
+            }
 
             motion_detector->update(data.accel_x, data.accel_y, data.accel_z);
 
@@ -55,4 +68,17 @@ void Hal::imu_init()
 
     // xTaskCreateWithCaps(_imu_task, "imu", 4096, NULL, 2, NULL, MALLOC_CAP_SPIRAM);
     xTaskCreatePinnedToCoreWithCaps(_imu_task, "imu", 4096, NULL, 2, NULL, 1, MALLOC_CAP_SPIRAM);
+}
+
+// [StackChan fork]
+bool Hal::getImuAccel(float& x, float& y, float& z)
+{
+    std::lock_guard<std::mutex> lock(_accel_mutex);
+    if (!_accel_valid) {
+        return false;
+    }
+    x = _accel[0];
+    y = _accel[1];
+    z = _accel[2];
+    return true;
 }
