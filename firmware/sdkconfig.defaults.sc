@@ -16,8 +16,10 @@ CONFIG_CUSTOM_WAKE_WORD_THRESHOLD=20
 CONFIG_SR_MN_CN_MULTINET7_QUANT=y
 CONFIG_SR_WN_WN9_HISTACKCHAN_TTS3=n
 
-# Do not let the OTA server replace self-built firmware (patches/xiaozhi-esp32-fork.patch).
+# Do not let the OTA server replace self-built firmware or assets (patches/xiaozhi-esp32-fork.patch):
+# no automatic upgrade, no server-pushed firmware / assets via MCP.
 CONFIG_SC_DISABLE_AUTO_OTA=y
+CONFIG_SC_DISABLE_REMOTE_OTA=y
 
 # Idle behaviour director (REQ-002): silent, quiet, awake 08:00-23:00 local time.
 CONFIG_SC_DEFAULT_TIMEZONE="CST-8"

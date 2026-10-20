@@ -1,8 +1,23 @@
 diff --git a/main/application.cc b/main/application.cc
-index e67514b..1f19ec6 100644
+index e67514b..82e3a87 100644
 --- a/main/application.cc
 +++ b/main/application.cc
-@@ -435,10 +435,16 @@ void Application::CheckNewVersion() {
+@@ -357,6 +357,14 @@ void Application::CheckAssetsVersion() {
+     Settings settings("assets", true);
+     // Check if there is a new assets need to be downloaded
+     std::string download_url = settings.GetString("download_url");
++#if CONFIG_SC_DISABLE_REMOTE_OTA
++    // [StackChan fork] Ignore a download URL pushed earlier: it would replace the custom assets.
++    if (!download_url.empty()) {
++        ESP_LOGW(TAG, "Ignoring pushed assets URL (CONFIG_SC_DISABLE_REMOTE_OTA): %s", download_url.c_str());
++        settings.EraseKey("download_url");
++        download_url.clear();
++    }
++#endif
+ 
+     if (!download_url.empty()) {
+         settings.EraseKey("download_url");
+@@ -435,10 +443,16 @@ void Application::CheckNewVersion() {
          retry_delay = 10; // Reset retry delay
  
          if (ota_->HasNewVersion()) {
@@ -19,6 +34,42 @@ index e67514b..1f19ec6 100644
          }
  
          // No new version, mark the current version as valid
+diff --git a/main/mcp_server.cc b/main/mcp_server.cc
+index 7cd7ba0..8d5251c 100644
+--- a/main/mcp_server.cc
++++ b/main/mcp_server.cc
+@@ -149,6 +149,7 @@ void McpServer::AddUserOnlyTools() {
+         });
+ 
+     // Firmware upgrade
++#if !CONFIG_SC_DISABLE_REMOTE_OTA  // [StackChan fork] the server must not push firmware to self-built devices
+     AddUserOnlyTool("self.upgrade_firmware", "Upgrade firmware from a specific URL. This will download and install the firmware, then reboot the device.",
+         PropertyList({
+             Property("url", kPropertyTypeString, "The URL of the firmware binary file to download and install")
+@@ -167,6 +168,7 @@ void McpServer::AddUserOnlyTools() {
+             
+             return true;
+         });
++#endif
+ 
+     // Display control
+ #ifdef HAVE_LVGL
+@@ -285,6 +287,7 @@ void McpServer::AddUserOnlyTools() {
+ #endif // HAVE_LVGL
+ 
+     // Assets download url
++#if !CONFIG_SC_DISABLE_REMOTE_OTA  // [StackChan fork] pushed assets would replace the custom wake word model
+     auto& assets = Assets::GetInstance();
+     if (assets.partition_valid()) {
+         AddUserOnlyTool("self.assets.set_download_url", "Set the download url for the assets",
+@@ -298,6 +301,7 @@ void McpServer::AddUserOnlyTools() {
+                 return true;
+             });
+     }
++#endif
+ }
+ 
+ void McpServer::AddTool(McpTool* tool) {
 diff --git a/scripts/build_default_assets.py b/scripts/build_default_assets.py
 index 9ca1464..7d29b3d 100755
 --- a/scripts/build_default_assets.py

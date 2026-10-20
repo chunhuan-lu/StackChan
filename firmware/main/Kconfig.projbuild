@@ -1017,6 +1017,15 @@ menu "StackChan fork options"
             AI Agent mode starts, which would overwrite self-built firmware. When enabled, a newer
             version is only logged. Manual update from Settings > About is not affected.
 
+    config SC_DISABLE_REMOTE_OTA
+        bool "Disable server-pushed firmware and assets updates"
+        default y
+        help
+            Do not register the user-only MCP tools self.upgrade_firmware and
+            self.assets.set_download_url, through which the server can push a firmware image or
+            an assets package, and ignore an assets download URL that was pushed earlier (it would
+            replace the custom wake word model). Manual update from Settings > About is not affected.
+
     config SC_DEFAULT_TIMEZONE
         string "Default timezone (POSIX TZ)"
         default "CST-8"
