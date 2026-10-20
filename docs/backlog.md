@@ -14,9 +14,9 @@ Status: `todo` · `decide` (needs a decision) · `doing` · `done` · `dropped`.
 
 | ID | Item | Status | Notes |
 |---|---|---|---|
-| B-001 | Custom wake word "起来干活" (qi lai gan huo) | decide | Not an available WakeNet phrase. Options: (a) existing WakeNet phrase, no partition change; (b) MultiNet `mn7_cn` (2.6 MB) + enlarge the 4 MB assets partition into the ~1.9 MB free at the end of flash, which also enables offline command words; (c) paid custom WakeNet from Espressif. |
-| B-002 | Disable xiaozhi automatic OTA | todo | `Application::CheckNewVersion()` installs new versions automatically and would overwrite self-built firmware. Notify only. |
-| B-003 | `fetch_repos.py`: multiple patches per repository | todo | Needed for `xiaozhi-esp32-fork.patch` (conventions §4). |
+| B-001 | Custom wake word "起来干活" (qi lai gan huo) | doing | Decided: MultiNet `mn7_cn` + assets partition enlarged to 6080 KB. Implemented on `feat/wake-word`, builds; waiting for on-device verification. See [REQ-001](requirements/REQ-001-custom-wake-word.md). |
+| B-002 | Disable xiaozhi automatic OTA | doing | `SC_DISABLE_AUTO_OTA` (default y) in the fork patch; implemented with B-001, not yet verified on the device. |
+| B-003 | `fetch_repos.py`: multiple patches per repository | done | `extra_patches` in `repos.json`, idempotent re-runs, errors instead of silent skips; `tools/xiaozhi_fork_patch.py`. Tested on the host (already applied / dirty tree / clean tree). |
 | B-004 | Wi-Fi throughput and latency | todo | Disable modem sleep during downloads and LAN control; move Wi-Fi/lwIP buffers to PSRAM (`SPIRAM_TRY_ALLOCATE_WIFI_LWIP`) and enlarge RX buffers / TCP window / UDP mailbox. |
 | B-005 | Do not hold the LVGL lock while sleeping | todo | `_stackchan_update_task` holds the lock during `vTaskDelay(100)` while xiaozhi is busy (`hal.cpp`). |
 | B-006 | Restore hotspot Wi-Fi provisioning | todo | 1.6 only allows App (BLE) setup, which self-built firmware cannot pass. Fallback today: BLE `setWifi` via nRF Connect. |

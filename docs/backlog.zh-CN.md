@@ -14,9 +14,9 @@
 
 | 编号 | 事项 | 状态 | 说明 |
 |---|---|---|---|
-| B-001 | 自定义唤醒词"起来干活"（qi lai gan huo） | decide | 不在乐鑫现成的 WakeNet 唤醒词里。可选方案：(a) 改用现成的 WakeNet 词，不用改分区；(b) 用 MultiNet `mn7_cn`（2.6 MB），并利用 flash 末尾约 1.9 MB 的空闲空间扩大 4 MB 的资源分区，这样还能顺带支持离线命令词；(c) 找乐鑫付费定制 WakeNet 模型。 |
-| B-002 | 关闭小智自动 OTA | todo | `Application::CheckNewVersion()` 发现新版本会自动安装，会覆盖自编译固件。改为只提示、不安装。 |
-| B-003 | `fetch_repos.py` 支持一个仓库打多个补丁 | todo | `xiaozhi-esp32-fork.patch` 需要用到（见规范第 4 节）。 |
+| B-001 | 自定义唤醒词"起来干活"（qi lai gan huo） | doing | 已决定：用 MultiNet `mn7_cn`，并把资源分区扩大到 6080 KB。已在 `feat/wake-word` 分支实现并编译通过，等待真机验证。见 [REQ-001](requirements/REQ-001-custom-wake-word.zh-CN.md)。 |
+| B-002 | 关闭小智自动 OTA | doing | 在 fork 补丁里加了 `SC_DISABLE_AUTO_OTA`（默认开启）；和 B-001 一起实现，尚未真机验证。 |
+| B-003 | `fetch_repos.py` 支持一个仓库打多个补丁 | done | `repos.json` 里新增 `extra_patches`；重复运行不会出错；补丁打不上时报错，不再静默跳过；新增 `tools/xiaozhi_fork_patch.py`。已在电脑上测试（已打过补丁 / 源码有改动 / 干净源码三种情况）。 |
 | B-004 | Wi-Fi 吞吐与延迟 | todo | 下载和局域网控制期间关闭省电模式；把 Wi-Fi/lwIP 缓冲区放进 PSRAM（`SPIRAM_TRY_ALLOCATE_WIFI_LWIP`），并调大接收缓冲区、TCP 窗口和 UDP 收包队列。 |
 | B-005 | 不要在睡眠时持有 LVGL 锁 | todo | 小智忙碌时，`_stackchan_update_task` 会拿着锁执行 `vTaskDelay(100)`（`hal.cpp`）。 |
 | B-006 | 恢复热点配网 | todo | 1.6 只允许通过 App（蓝牙）配网，而自编译固件过不了 App 的握手。目前的备用办法：用 nRF Connect 通过蓝牙发送 `setWifi`。 |
