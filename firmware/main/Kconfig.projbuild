@@ -1129,4 +1129,14 @@ menu "StackChan fork options"
             ignores clicks while it slides in or out and shows "Going home..." before the restart,
             and implausible touch controller samples are dropped.
 
+    config SC_USB_LINK
+        bool "Claude Code status link over the USB port"
+        default y
+        depends on ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG
+        help
+            Receive checksummed JSON-line commands from the PC agent (tools/sc-agent, REQ-003) on
+            the native USB-Serial/JTAG port, next to the normal log output. The idle director shows
+            the Claude Code sessions on the mood LEDs and reacts to their events. Inactive until the
+            agent connects; about 1 KB of internal RAM (buffers and task stack are in PSRAM).
+
 endmenu

@@ -6,6 +6,8 @@
 #include "idle_director.h"
 #include "../avatar/decorators/decorators.h"
 #include "../utils/random.h"
+#include "application.h"
+#include <assets/lang_config.h>
 #include <mooncake_log.h>
 #include <sdkconfig.h>
 #include <algorithm>
@@ -123,6 +125,7 @@ static float clock_energy(int hour)
 
 IdleDirectorModifier::IdleDirectorModifier(int activityLevel) : _activity(std::clamp(activityLevel, 0, 3))
 {
+    _claude_written.fill(kNoColor);
     s_asleep      = false;
     s_screen_wake = false;  // a tap left over from a previous director must not wake this one
     _touch_conn = GetHAL().onHeadPetGesture.connect([this](HeadPetGesture gesture) {
@@ -176,6 +179,7 @@ IdleDirectorModifier::~IdleDirectorModifier()
     s_asleep      = false;
     s_screen_wake = false;
     restore_backlight();
+    _led_written[0] = _led_written[1] = _led_written[2] = -1;  // the session LEDs may be lit: force the clear
     write_led(0, 0, 0);
     mclog::tagInfo(_tag, "stopped");
 }
@@ -222,6 +226,10 @@ void IdleDirectorModifier::_update(Modifiable& sc)
         mclog::tagInfo(_tag, "screen tap while asleep");
         note_interaction(now);
         wake_up(sc, now, false);
+    }
+    ClaudeEvent claude_event;
+    while (GetClaudeStatus().popEvent(claude_event, now)) {
+        on_claude_event(sc, claude_event, now);
     }
     if (_shake_event.exchange(false)) {
         on_shake(sc, now);
@@ -1116,6 +1124,11 @@ void IdleDirectorModifier::set_led_fx(LedFx fx, uint8_t r, uint8_t g, uint8_t b,
 
 void IdleDirectorModifier::update_led(uint32_t now)
 {
+    // Claude Code sessions take the mood LEDs; short reaction effects (pick-up, petting) still win.
+    if (!(_led_fx != LedFx::None && now < _led_fx_until) && update_claude_led(now)) {
+        return;
+    }
+
     const auto& m     = GetIdleMood();
     const float scale = CONFIG_SC_IDLE_LED_MAX / 24.0f;
     float target[3]   = {0, 0, 0};
@@ -1174,6 +1187,156 @@ void IdleDirectorModifier::write_led(uint8_t r, uint8_t g, uint8_t b)
         GetHAL().setRgbColor(index, r, g, b);
     }
     GetHAL().refreshRgb();
+    _claude_written.fill(kNoColor);  // the session LEDs must be rewritten afterwards
+}
+
+/* ---------------------------------------------------------------------------------------------- */
+/*                                   Claude Code status (REQ-003)                                 */
+/* ---------------------------------------------------------------------------------------------- */
+
+void IdleDirectorModifier::on_claude_event(Modifiable& sc, const ClaudeEvent& event, uint32_t now)
+{
+    static constexpr const char* kNames[] = {"needs", "done", "fail", "err", "compact"};
+    mclog::tagInfo(_tag, "claude {} (slot {})", kNames[static_cast<int>(event.ev)], event.slot);
+
+    if (event.ev == ClaudeEv::Fail) {
+        _claude_flash_until[event.slot] = now + 3000;
+    }
+    if (is_night()) {
+        return;  // REQ-003: at night only the session LEDs, no face, head move or sound
+    }
+
+    const bool needs = event.ev == ClaudeEv::Needs;
+    if (needs) {
+        if (event.sound) {
+            // Played from the main task: powering the codec up does not belong under the LVGL lock.
+            Application::GetInstance().Schedule(
+                []() { Application::GetInstance().PlaySound(Lang::Sounds::OGG_POPUP); });
+        }
+        note_interaction(now);  // stay awake for the grace period
+        if (_phase == Phase::Sleeping || (_anim && _anim_purpose == AnimPurpose::DozeOff)) {
+            wake_up(sc, now, false);  // waking up is the call-back gesture here
+            show_bubble(sc, event.text, 8000, now);
+            return;
+        }
+    } else if (_phase == Phase::Sleeping) {
+        return;  // asleep: the session LEDs tell it
+    }
+
+    const bool busy = _held || _tilted || _touching || now < _paused_until ||
+                      (_anim && _anim_purpose != AnimPurpose::Idle);
+    if (busy) {
+        show_bubble(sc, event.text, 6000, now);  // another reaction owns the face and the head
+        return;
+    }
+    if (_anim) {
+        stop_anim(sc);
+    }
+
+    switch (event.ev) {
+        case ClaudeEv::Needs:
+            set_emotion_for(sc, avatar::Emotion::Doubt, 4000, now);
+            show_bubble(sc, event.text, 8000, now);
+            if (try_head_move(sc, now, INT32_MIN, kAwakePitch + 120, kSlowSpeed * 2, true)) {
+                _pending_move_at = now + 2500;  // look up at the user, then settle
+                _pending_pitch   = kAwakePitch;
+                _pending_speed   = kSlowSpeed;
+            }
+            break;
+        case ClaudeEv::Done:
+            set_emotion_for(sc, avatar::Emotion::Happy, 2500, now);
+            show_bubble(sc, event.text, 4000, now);
+            if (try_head_move(sc, now, INT32_MIN, kAwakePitch - 60, kSlowSpeed * 2, true)) {
+                _pending_move_at = now + 700;  // a small nod
+                _pending_pitch   = kAwakePitch;
+                _pending_speed   = kSlowSpeed * 2;
+            }
+            break;
+        case ClaudeEv::Fail:
+            sc.avatar().addDecorator(std::make_unique<avatar::SweatDecorator>(lv_screen_active(), 1500, 700));
+            show_bubble(sc, event.text, 3000, now);
+            break;
+        case ClaudeEv::Err:
+            set_emotion_for(sc, avatar::Emotion::Sad, 3000, now);
+            show_bubble(sc, event.text, 5000, now);
+            break;
+        case ClaudeEv::Compact:
+            play_keys(sc, anim::yawn(), AnimPurpose::Reaction, now);
+            show_bubble(sc, event.text, 4000, now);
+            break;
+    }
+}
+
+bool IdleDirectorModifier::update_claude_led(uint32_t now)
+{
+    ClaudeStatus::Sessions sessions;
+    if (!GetClaudeStatus().snapshot(sessions, now)) {
+        if (_claude_led_active) {
+            _claude_led_active = false;
+            _led_written[0] = _led_written[1] = _led_written[2] = -1;  // mood light rewrites everything
+        }
+        return false;
+    }
+    if (!_claude_led_active) {
+        _claude_led_active = true;
+        _claude_written.fill(kNoColor);
+        _led_written[0] = _led_written[1] = _led_written[2] = -1;  // the mood cache no longer matches
+    }
+
+    static constexpr uint32_t kDoneDimMs = 10 * 60 * 1000;
+    const float t     = now / 1000.0f;
+    const float scale = CONFIG_SC_IDLE_LED_MAX / 24.0f * (_phase == Phase::Sleeping ? 0.35f : 1.0f);
+    bool dirty        = false;
+    for (int slot = 0; slot < ClaudeStatus::kSlots; ++slot) {
+        const auto& s = sessions[slot];
+        float rgb[3]  = {0, 0, 0};
+        auto set      = [&rgb](float r, float g, float b) { rgb[0] = r, rgb[1] = g, rgb[2] = b; };
+        if (now < _claude_flash_until[slot]) {
+            std::fmod(t, 0.4f) < 0.2f ? set(24, 0, 0) : set(0, 0, 0);  // a tool failed
+        } else if (s.used) {
+            switch (s.st) {
+                case ClaudeSt::Idle:
+                    set(8, 8, 8);
+                    break;
+                case ClaudeSt::Work: {
+                    const float k = 0.55f + 0.45f * std::sin(t * 3.14f);  // 2 s breathing
+                    set(0, 0, 22 * k);
+                    break;
+                }
+                case ClaudeSt::Wait:
+                    std::fmod(t, 1.0f) < 0.5f ? set(24, 12, 0) : set(3, 1, 0);  // needs the user
+                    break;
+                case ClaudeSt::Done:
+                    age_ms(now, s.stSinceMs) < static_cast<int32_t>(kDoneDimMs) ? set(0, 18, 0) : set(0, 4, 0);
+                    break;
+                case ClaudeSt::Err:
+                    set(22, 0, 0);
+                    break;
+            }
+        }
+        // The PY32 LED driver keeps RGB565 (r, b: 8 per step, g: 4): lift dim non-zero channels to the
+        // first step so night and idle colours do not vanish.
+        static constexpr int kMinStep[3] = {8, 4, 8};
+        uint8_t c[3];
+        for (int i = 0; i < 3; ++i) {
+            int v = static_cast<int>(std::lround(std::min(255.0f, rgb[i] * scale)));
+            if (rgb[i] > 0.5f && v < kMinStep[i]) {
+                v = kMinStep[i];
+            }
+            c[i] = static_cast<uint8_t>(v);
+        }
+        const uint32_t packed = static_cast<uint32_t>(c[0]) << 16 | c[1] << 8 | c[2];
+        if (_claude_written[slot] != packed) {
+            _claude_written[slot] = packed;
+            GetHAL().setRgbColor(kMoodLeds[slot], c[0], c[1], c[2]);
+            GetHAL().setRgbColor(kMoodLeds[slot + ClaudeStatus::kSlots], c[0], c[1], c[2]);
+            dirty = true;
+        }
+    }
+    if (dirty) {
+        GetHAL().refreshRgb();
+    }
+    return true;
 }
 
 void IdleDirectorModifier::restore_backlight()

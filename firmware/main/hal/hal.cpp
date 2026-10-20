@@ -5,6 +5,10 @@
  */
 #include "hal.h"
 #include <memory>
+#include <sdkconfig.h>
+#if CONFIG_SC_USB_LINK
+#include "sc/usb_link.h"  // [StackChan fork]
+#endif
 #include <mooncake_log.h>
 #include <nvs_flash.h>
 
@@ -40,6 +44,9 @@ void Hal::init()
     imu_init();
     servo_init();
     lvgl_init();
+#if CONFIG_SC_USB_LINK
+    sc::usb_link::start();  // [StackChan fork] Claude Code status link (REQ-003)
+#endif
 }
 
 /* -------------------------------------------------------------------------- */

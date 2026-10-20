@@ -35,6 +35,9 @@ CONFIG_SC_IDLE_SLEEP_BACKLIGHT_LIT=45
 CONFIG_SC_EXT_POWER_NO_STANDBY=y
 CONFIG_SC_TOUCH_FIXES=y
 
+# Claude Code status link over USB (REQ-003, phase 1).
+CONFIG_SC_USB_LINK=y
+
 # Core dumps to the existing 64 KB coredump partition (read with idf.py coredump-info). Coredump
 # log strings would cost ~5 KB of internal RAM, so they are off.
 CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y

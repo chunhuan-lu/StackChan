@@ -5,6 +5,7 @@
  */
 #pragma once
 #include "../modifiable.h"
+#include "claude_status.h"
 #include "face_animation.h"
 #include <hal/hal.h>
 #include <array>
@@ -116,6 +117,10 @@ private:
     void set_led_fx(LedFx fx, uint8_t r, uint8_t g, uint8_t b, uint32_t durationMs, uint32_t now);
     void update_led(uint32_t now);
     void write_led(uint8_t r, uint8_t g, uint8_t b);
+
+    // Claude Code status (REQ-003): session LEDs and event reactions
+    void on_claude_event(Modifiable& sc, const ClaudeEvent& event, uint32_t now);
+    bool update_claude_led(uint32_t now);
     void restore_backlight();
     int sleep_backlight() const;
     void update_backlight(uint32_t now);
@@ -215,6 +220,12 @@ private:
     uint32_t _led_fx_until = 0;
     float _led_fx_color[3] = {0, 0, 0};
     uint32_t _next_led   = 0;
+
+    // Claude Code session LEDs (slot i = LEDs 1+i and 7+i)
+    static constexpr uint32_t kNoColor = UINT32_MAX;
+    bool _claude_led_active = false;
+    std::array<uint32_t, ClaudeStatus::kSlots> _claude_written{};
+    std::array<uint32_t, ClaudeStatus::kSlots> _claude_flash_until{};
 
     // Speech bubble (silent "Zzz", "?!", "...")
     bool _bubble_active    = false;
