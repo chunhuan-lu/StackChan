@@ -26,8 +26,16 @@ token_file="${SC_TOKEN_FILE:-$HOME/.sc-agent/token}"
 token=$(tr -d ' \r\n' < "$token_file")
 [ -n "$token" ] || exit 0
 
-# Windows curl.exe reaches sc-agent on the Windows loopback, also from WSL through interop.
-if command -v curl.exe >/dev/null; then
+# Windows curl.exe reaches sc-agent on the Windows loopback, also from WSL through interop. WSL with systemd can
+# lose its interop registration (curl.exe then fails with "Exec format error"); WSL's own curl reaches the Windows
+# loopback too when networkingMode=mirrored is set in .wslconfig.
+interop=0
+for entry in /proc/sys/fs/binfmt_misc/WSLInterop*; do
+  [ -e "$entry" ] && interop=1
+done
+if [ -n "${WSL_DISTRO_NAME:-}" ] && [ "$interop" = 0 ] && command -v curl >/dev/null; then
+  curl_bin=curl  # WSL without working interop: needs mirrored networking
+elif command -v curl.exe >/dev/null; then
   curl_bin=curl.exe
 elif [ -x /mnt/c/Windows/System32/curl.exe ]; then
   curl_bin=/mnt/c/Windows/System32/curl.exe  # WSL with appendWindowsPath=false

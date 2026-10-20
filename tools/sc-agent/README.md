@@ -245,6 +245,11 @@ If PowerShell refuses to run scripts, use `Set-ExecutionPolicy -Scope CurrentUse
 - **Interop disabled** (`[interop] enabled=false`): WSL cannot start Windows programs. Enable it again and run
   `wsl --shutdown`, or switch WSL to mirrored networking (`networkingMode=mirrored` under `[wsl2]` in
   `%USERPROFILE%\.wslconfig`): then the Linux `curl` reaches 127.0.0.1 on Windows and the hook uses it.
+- **`curl.exe: cannot execute binary file: Exec format error` in WSL**: interop is lost, typically with
+  `systemd=true` in `/etc/wsl.conf` on Ubuntu 20.04 (the `WSLInterop` entry in `/proc/sys/fs/binfmt_misc/` is
+  missing). The hook notices the missing entry and uses the Linux `curl`, which works with mirrored networking. To
+  repair interop itself: `echo ':WSLInterop:M::MZ::/init:PF' | sudo tee /etc/binfmt.d/WSLInterop.conf`, then
+  `sudo systemctl restart systemd-binfmt` (or `wsl --shutdown` from Windows).
 - **HTTP port taken**: change `http_port` (see Configuration).
 
 ## Protocol and tests

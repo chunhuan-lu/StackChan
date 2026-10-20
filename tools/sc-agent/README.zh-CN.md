@@ -228,6 +228,11 @@ agent 占用着 COM 口，所以直接执行 `idf.py flash` 会报"端口被占�
 - **interop 被关闭**（`[interop] enabled=false`）：WSL 无法启动 Windows 程序。重新启用并执行 `wsl --shutdown`；
   或者把 WSL 切换到镜像网络（在 `%USERPROFILE%\.wslconfig` 的 `[wsl2]` 下设置 `networkingMode=mirrored`），
   这样 Linux 的 `curl` 能访问 Windows 的 127.0.0.1，hook 会自动改用它。
+- **WSL 中出现 `curl.exe: cannot execute binary file: Exec format error`**：互操作失效了，常见于 Ubuntu 20.04 在
+  `/etc/wsl.conf` 里设置了 `systemd=true`（`/proc/sys/fs/binfmt_misc/` 里缺少 `WSLInterop` 项）。hook 检测到这一项缺失时，
+  会改用 Linux 的 `curl`，在镜像网络下可以正常工作。要修复互操作本身：
+  `echo ':WSLInterop:M::MZ::/init:PF' | sudo tee /etc/binfmt.d/WSLInterop.conf`，然后
+  `sudo systemctl restart systemd-binfmt`（或在 Windows 上执行 `wsl --shutdown`）。
 - **HTTP 端口被占用**：修改 `http_port`（见"配置"）。
 
 ## 协议与测试
