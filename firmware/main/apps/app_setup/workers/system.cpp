@@ -30,7 +30,10 @@ static const std::vector<TimezoneOption_t> _timezone_list = {
     {"London (UTC+0)", "GMT0"},       {"Berlin (UTC+1)", "CET-1"},         {"Cairo (UTC+2)", "EET-2"},
     {"Moscow (UTC+3)", "MSK-3"},      {"Dubai (UTC+4)", "GST-4"},          {"Karachi (UTC+5)", "PKT-5"},
     {"Dhaka (UTC+6)", "BST-6"},       {"Bangkok (UTC+7)", "ICT-7"},        {"Beijing (UTC+8)", "CST-8"},
-    {"Tokyo (UTC+9)", "JST-9"},       {"Sydney (UTC+10)", "AEST-10"},      {"Noumea (UTC+11)", "SBT-11"},
+    {"Tokyo (UTC+9)", "JST-9"},       {"Sydney (UTC+10)", "AEST-10"},
+    // [StackChan fork] Melbourne with daylight saving (AEDT from the first Sunday in October to the first Sunday in April)
+    {"Melbourne (AEST/AEDT)", "AEST-10AEDT,M10.1.0,M4.1.0/3"},
+    {"Noumea (UTC+11)", "SBT-11"},
     {"Auckland (UTC+12)", "NZST-12"}, {"Fiji (UTC+13)", "FJT-13"},         {"Line Islands (UTC+14)", "LINT-14"}};
 
 VolumeSetupWorker::VolumeSetupWorker()

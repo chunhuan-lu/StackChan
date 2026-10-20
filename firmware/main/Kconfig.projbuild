@@ -1028,9 +1028,10 @@ menu "StackChan fork options"
 
     config SC_DEFAULT_TIMEZONE
         string "Default timezone (POSIX TZ)"
-        default "CST-8"
+        default "AEST-10AEDT,M10.1.0,M4.1.0/3"
         help
             Used until a timezone is chosen in Settings > System (upstream default: GMT0).
+            Default: Melbourne with daylight saving.
 
     config SC_IDLE_DIRECTOR
         bool "Idle behaviour director in AI Agent mode"
@@ -1064,14 +1065,15 @@ menu "StackChan fork options"
     config SC_IDLE_DARK_LUX
         int "Darkness threshold (lux)"
         range 0 1000
-        default 5
+        default 3
         help
             The robot falls asleep after the ambient light stays below this value for one minute.
+            The sensor sits behind the front glass: a desk lamp at night measured 11-16 lux.
 
     config SC_IDLE_BRIGHT_LUX
         int "Light-on threshold (lux)"
         range 1 2000
-        default 20
+        default 8
         help
             Must be higher than the darkness threshold (hysteresis).
 

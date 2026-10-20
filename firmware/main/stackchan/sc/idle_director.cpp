@@ -44,6 +44,7 @@ static constexpr float kStillEnergy     = 0.6f;
 static constexpr float kPickupEnergy    = 2.5f;
 static constexpr float kPickupMagDelta  = 2.2f;
 static constexpr uint32_t kPickupHoldMs = 300;
+static constexpr uint32_t kTouchQuietMs = 1500;  // first test: a tap burst was reported as a pick-up
 static constexpr uint32_t kSetDownMs    = 2500;
 static constexpr float kTiltOnDeg       = 22.0f;
 static constexpr float kTiltOffDeg      = 12.0f;
@@ -253,6 +254,7 @@ void IdleDirectorModifier::handle_touch_events(Modifiable& sc, uint32_t now)
     }
 
     for (const auto& e : events) {
+        _touch_quiet_until = now + kTouchQuietMs;
         switch (e.gesture) {
             case HeadPetGesture::Press:
                 _press_ms = e.ms;
@@ -441,6 +443,10 @@ void IdleDirectorModifier::poll_imu(Modifiable& sc, uint32_t now)
     }
 
     if (!_held) {
+        if (_touching || now < _touch_quiet_until) {
+            _pickup_since = 0;
+            return;
+        }
         const bool jolt = _motion_energy > kPickupEnergy || std::fabs(mag - kGravity) > kPickupMagDelta;
         _pickup_since   = jolt ? (_pickup_since ? _pickup_since : now) : 0;
         if (_pickup_since && now - _pickup_since >= kPickupHoldMs) {

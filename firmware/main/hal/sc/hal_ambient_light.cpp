@@ -38,6 +38,7 @@ bool Hal::getAmbientLux(float& lux)
         }
         mclog::tagInfo(_tag, "LTR-553 ready");
         _sensor = std::move(sensor);
+        return false;  // no completed measurement yet (the first read returned 0 lux on the device)
     }
 
     return _sensor->readLux(lux);

@@ -186,6 +186,7 @@ private:
     float _motion_energy   = 0.0f;
     uint32_t _stable_since = 0;
     uint32_t _servo_busy_until = 0;
+    uint32_t _touch_quiet_until = 0;  // touching the head jolts the IMU: no pick-up detection meanwhile
     bool _held                 = false;
     uint32_t _pickup_since     = 0;
     uint32_t _held_still_since = 0;
