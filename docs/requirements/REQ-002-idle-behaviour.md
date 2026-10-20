@@ -2,7 +2,8 @@
 
 **English** | [中文](REQ-002-idle-behaviour.zh-CN.md)
 
-Status: implemented on `feat/idle-behavior` (branched from `feat/wake-word`), builds, **not yet verified on the device**
+Status: implemented on `feat/idle-behavior` (branched from `feat/wake-word`); first on-device test 2026-10-20 passed
+for the parts tried, then tuned (see [dev log](../devlog/2026-10-20.md)); remaining acceptance tests pending
 · Backlog: B-011
 
 ## Goal
@@ -43,7 +44,7 @@ state, with cooldowns and no immediate repetition.
 | Sleep pose | eyes almost closed, "Zzz" bubble now and then, rare mumbling ("..."), head lowered, backlight `SC_IDLE_SLEEP_BACKLIGHT`, mood light off |
 | Boredom | look-around and bug chase become more likely; at boredom ≥ 0.92 it takes a 10 min nap |
 | Head touch | strokes (existing hearts reaction) + afterglow: contented squint and pink heartbeat light; 3 quick taps: annoyed; 6 taps: dizzy; long press 2.5 s: lulled into a 10 min nap; touching while asleep: peek (night/dark) or wake (nap) |
-| Picked up / set down | startled wide eyes, "?!", eyes looking around while held; set down: relief (sweat, happy) |
+| Picked up / set down | startled wide eyes, "?!", eyes looking around while held; set down: relief (sweat, happy). Detection pauses while the head is touched and for 1.5 s afterwards (taps jolt the IMU) |
 | Tilted > 22° | doubt + sweat until level again |
 | Mood light | LEDs 1–5 and 7–11 (LED 0/6 stay with the status indicator); colour from mood (blue grumpy / teal calm / amber happy), brightness from energy, slow breathing; max channel `SC_IDLE_LED_MAX` |
 
@@ -51,17 +52,18 @@ state, with cooldowns and no immediate repetition.
 
 - The schedule is only active after SNTP has synchronised the clock in this boot (`Hal::isTimeSynced()`), because
   xiaozhi's OTA check shifts the system clock by the timezone offset before that.
-- Default timezone `SC_DEFAULT_TIMEZONE` = `CST-8` (upstream `GMT0`); a timezone chosen in Settings > System wins.
+- Default timezone `SC_DEFAULT_TIMEZONE` = Melbourne `AEST-10AEDT,M10.1.0,M4.1.0/3` (upstream `GMT0`); a timezone
+  chosen in Settings > System wins. "Melbourne (AEST/AEDT)" was added to that list (upstream only has fixed offsets).
 
 ## Configuration (`StackChan fork options`)
 
 | Option | Default |
 |---|---|
-| `SC_DEFAULT_TIMEZONE` | `CST-8` |
+| `SC_DEFAULT_TIMEZONE` | `AEST-10AEDT,M10.1.0,M4.1.0/3` |
 | `SC_IDLE_DIRECTOR` | y |
 | `SC_IDLE_WAKE_HOUR` / `SC_IDLE_SLEEP_HOUR` | 8 / 23 |
 | `SC_IDLE_HEAD_MOVES_PER_HOUR` | 20 (activity level 0/1/2/3 from the AI Agent settings: ×0 / ×0.5 / ×1 / ×2) |
-| `SC_IDLE_DARK_LUX` / `SC_IDLE_BRIGHT_LUX` | 5 / 20 |
+| `SC_IDLE_DARK_LUX` / `SC_IDLE_BRIGHT_LUX` | 3 / 8 (sensor behind the front glass: desk lamp 11–16 lux) |
 | `SC_IDLE_SLEEP_BACKLIGHT` | 5 |
 | `SC_IDLE_LED_MAX` | 24 |
 
@@ -79,19 +81,20 @@ After changing Kconfig files run `idf.py reconfigure` (an incremental build does
 | `main/hal/hal_imu.cpp` | keep the latest accelerometer sample |
 | `main/hal/hal_rtc.cpp` | default timezone from Kconfig |
 | `main/hal/board/stackchan_display.cc` | use the director in the idle slot |
+| `main/apps/app_setup/workers/system.cpp` | timezone entry "Melbourne (AEST/AEDT)" |
 | `main/Kconfig.projbuild`, `sdkconfig.defaults.sc` | options above |
 
 ## Deviations from the plan
 
-- **Head levelling on tilt is deferred**: the IMU sits in the head and its axis/sign relative to the pitch servo is not
-  known yet. Batch 1 reacts with an expression only. The director logs the gravity vector once a minute
-  (`imu g=(...)`) so the axes can be calibrated during the first device test.
+- **Head levelling on tilt is deferred**: the IMU sits in the head and its axis/sign relative to the pitch servo was not
+  known. Batch 1 reacts with an expression only. The first device test calibrated the axes (gravity on +Y, head pitch
+  about X, pitch ≈ atan2(gz, gy)), so levelling moves to batch 2 (B-017).
 
 ## Known limitations
 
 - On battery, upstream's power-save timer still takes over after 5 min idle ("sleepy" + Zzz) and the device powers off
   after the idle shutdown time (default 10 min). The director is meant for USB power.
-- Lux and IMU thresholds are first guesses and need tuning on the device (lux is logged every 5 min).
+- Lux thresholds were tuned once from the first test; IMU thresholds are still first guesses (lux is logged every 5 min).
 - Inner state is not persisted across reboots.
 
 ## Acceptance criteria (on the device, USB power)

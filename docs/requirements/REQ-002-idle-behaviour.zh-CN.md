@@ -2,7 +2,8 @@
 
 [English](REQ-002-idle-behaviour.md) | **中文**
 
-状态：已在 `feat/idle-behavior` 分支实现（从 `feat/wake-word` 拉出），编译通过，**尚未真机验证** · 对应 backlog：B-011
+状态：已在 `feat/idle-behavior` 分支实现（从 `feat/wake-word` 拉出）；2026-10-20 第一次真机测试中试过的部分都通过，
+之后做了调整（见[开发日志](../devlog/2026-10-20.zh-CN.md)）；其余验收测试待做 · 对应 backlog：B-011
 
 ## 目标
 
@@ -41,24 +42,25 @@
 | 睡姿 | 眼睛几乎闭上，偶尔冒"Zzz"气泡，很少会说梦话（"..."）；低头；背光调到 `SC_IDLE_SLEEP_BACKLIGHT`；心情灯熄灭 |
 | 无聊升级 | 越无聊，越容易环顾四周、追虫子；无聊值 ≥ 0.92 时会小睡 10 分钟 |
 | 摸头 | 撸毛（沿用原有的爱心反应）后有余韵：满足地眯眼，灯光变成粉色心跳；快速轻拍 3 下：生气；拍 6 下：头晕；长按 2.5 秒：被哄着小睡 10 分钟；睡着时摸它：睁眼瞄一下（夜里或天黑时），或者醒来（小睡时） |
-| 被拿起、放下 | 被拿起：吓得睁大眼睛，冒"?!"，被拿着时四处张望；放下：松一口气（流汗、开心） |
+| 被拿起、放下 | 被拿起：吓得睁大眼睛，冒"?!"，被拿着时四处张望；放下：松一口气（流汗、开心）。头部被触摸期间及之后 1.5 秒内暂停检测（拍头会震动 IMU） |
 | 倾斜超过 22° | 疑惑加流汗，直到放平为止 |
 | 心情灯 | 用 LED 1–5 和 7–11（LED 0 和 6 留给状态指示灯）；颜色反映心情（蓝色不高兴 / 青色平静 / 琥珀色开心），亮度反映精力，缓慢呼吸；单通道最大值 `SC_IDLE_LED_MAX` |
 
 ### 时间
 
 - 作息只在本次开机 SNTP 同步完成后才生效（`Hal::isTimeSynced()`），因为在那之前，小智的 OTA 检查会把系统时钟按时区偏移拨动过。
-- 默认时区 `SC_DEFAULT_TIMEZONE` = `CST-8`（官方默认是 `GMT0`）；在「设置 → 系统」里选择的时区优先。
+- 默认时区 `SC_DEFAULT_TIMEZONE` = 墨尔本 `AEST-10AEDT,M10.1.0,M4.1.0/3`（官方默认是 `GMT0`）；在「设置 → 系统」里选择的时区优先。
+  该列表里新增了"Melbourne (AEST/AEDT)"（官方列表只有固定偏移的时区）。
 
 ## 配置项（`StackChan fork options` 菜单）
 
 | 配置项 | 默认值 |
 |---|---|
-| `SC_DEFAULT_TIMEZONE` | `CST-8` |
+| `SC_DEFAULT_TIMEZONE` | `AEST-10AEDT,M10.1.0,M4.1.0/3` |
 | `SC_IDLE_DIRECTOR` | y |
 | `SC_IDLE_WAKE_HOUR` / `SC_IDLE_SLEEP_HOUR` | 8 / 23 |
 | `SC_IDLE_HEAD_MOVES_PER_HOUR` | 20（AI Agent 设置里的活跃度 0/1/2/3 对应 ×0 / ×0.5 / ×1 / ×2） |
-| `SC_IDLE_DARK_LUX` / `SC_IDLE_BRIGHT_LUX` | 5 / 20 |
+| `SC_IDLE_DARK_LUX` / `SC_IDLE_BRIGHT_LUX` | 3 / 8（传感器在前面板玻璃后面：开台灯 11–16 lux） |
 | `SC_IDLE_SLEEP_BACKLIGHT` | 5 |
 | `SC_IDLE_LED_MAX` | 24 |
 
@@ -76,18 +78,20 @@
 | `main/hal/hal_imu.cpp` | 保存最新的加速度读数 |
 | `main/hal/hal_rtc.cpp` | 默认时区改由 Kconfig 决定 |
 | `main/hal/board/stackchan_display.cc` | 在待机槽位使用行为调度器 |
+| `main/apps/app_setup/workers/system.cpp` | 新增时区选项"Melbourne (AEST/AEDT)" |
 | `main/Kconfig.projbuild`、`sdkconfig.defaults.sc` | 上面列出的配置项 |
 
 ## 与原计划的差异
 
-- **倾斜时"头往反方向保持水平"推迟实现**：IMU 装在头上，它的坐标轴和正负方向与俯仰舵机的对应关系还不清楚。
-  第一批只做表情反应。调度器每分钟会在日志里输出一次重力向量（`imu g=(...)`），第一次真机测试时就能标定坐标轴。
+- **倾斜时"头往反方向保持水平"推迟实现**：IMU 装在头上，当时不清楚它的坐标轴和正负方向与俯仰舵机的对应关系。
+  第一批只做表情反应。第一次真机测试已经标定了坐标轴（重力在 +Y，头部俯仰绕 X 轴，俯仰角 ≈ atan2(gz, gy)），
+  保持水平放到第二批（B-017）。
 
 ## 已知限制
 
 - 用电池时，官方的省电计时器在待机 5 分钟后仍会接管（显示"sleepy"和 Zzz），到了待机关机时间（默认 10 分钟）就会关机。
   这个调度器主要面向 USB 供电的场景。
-- 照度和 IMU 的阈值都是初步估计，需要在真机上调整（照度每 5 分钟记一次日志）。
+- 照度阈值已根据第一次测试调整过一次；IMU 阈值仍是初步估计（照度每 5 分钟记一次日志）。
 - 内心状态在重启后不会保留。
 
 ## 验收标准（真机，USB 供电）
