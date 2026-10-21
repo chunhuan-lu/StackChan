@@ -47,6 +47,7 @@ enum class SettingId : uint8_t {
     SuitHead,
     SuitHeadSpeed,
     UsbAwake,
+    FaceProbeRate,
     Count,
 };
 

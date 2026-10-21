@@ -1236,6 +1236,30 @@ menu "StackChan fork options"
 
     endmenu # Claude Code link
 
+    menu "Camera"
+
+    config SC_FACE_PROBE
+        bool "Face detection probe (prototype)"
+        default n
+        depends on IDF_TARGET_ESP32S3
+        help
+            REQ-008 step 1: while the AI Agent is idle, a low-priority task on core 1 runs ESP-DL face
+            detection on the camera frames, draws the face box on the screen and logs timing and memory.
+            For measuring only; no behaviour. Frames never leave the device.
+
+    config SC_MIC_BUFFER_MS
+        int "Microphone buffer (ms, 0 = off)"
+        default 0
+        range 0 2000
+        help
+            A high-priority task on core 1 moves the microphone samples from the I2S DMA buffers (60 ms) into a
+            PSRAM buffer of this length, which the audio task reads. Face detection on the other core slows the
+            wake word down for a few hundred milliseconds at a time (PSRAM and cache contention); without the
+            buffer, the DMA buffers overflow and the wake word misses parts of what was said.
+            0 reads the I2S channel directly, as upstream does.
+
+    endmenu # Camera
+
     menu "Settings"
 
     config SC_SETTINGS_PANEL

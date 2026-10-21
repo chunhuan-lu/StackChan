@@ -12,6 +12,9 @@
 #if CONFIG_SC_SETTINGS_PANEL
 #include <stackchan/sc/settings_panel.h>  // [StackChan fork]
 #endif
+#if CONFIG_SC_FACE_PROBE
+#include "sc/face_probe.h"  // [StackChan fork]
+#endif
 #if CONFIG_SC_IDLE_DIRECTOR || CONFIG_SC_SETTINGS_PANEL || CONFIG_SC_EXT_POWER_NO_STANDBY
 #define SC_HAS_SETTINGS 1
 #include <stackchan/sc/sc_settings.h>  // [StackChan fork]
@@ -204,6 +207,9 @@ void Hal::startXiaozhi()
 
 #if CONFIG_SC_IDLE_DIRECTOR
     stackchan::sc::ScSettings::get().reload();  // [StackChan fork] pick up "activity" from the Settings app
+#endif
+#if CONFIG_SC_FACE_PROBE
+    sc::face_probe::start();  // [StackChan fork] REQ-008 prototype
 #endif
 
     auto& motion = GetStackChan().motion();

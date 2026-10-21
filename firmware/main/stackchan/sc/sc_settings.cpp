@@ -135,6 +135,8 @@ static const SettingInfo kSettings[] = {
      "Servo speed of those head movements, 100 slow to 1000 fastest."},
     {SettingId::UsbAwake, "usb_awake", "Power", "No standby on USB", "", SettingType::Bool, 1, 0, 1, 1, nullptr,
      "Never power-save or power off while USB power is present."},
+    {SettingId::FaceProbeRate, "face_probe", "Camera", "Face checks / s", "", SettingType::Int, 1, 0, 4, 1, nullptr,
+     "Face detection prototype: checks per second at most, 0 = off. Fewer when the wake word falls behind."},
 };
 static_assert(sizeof(kSettings) / sizeof(kSettings[0]) == static_cast<size_t>(SettingId::Count),
               "one table entry per SettingId, in enum order");
@@ -158,6 +160,12 @@ static bool compiled_in(SettingId id)
         case SettingId::SuitHead:
         case SettingId::SuitHeadSpeed:
 #if CONFIG_SC_IDLE_DIRECTOR && CONFIG_SC_USB_LINK
+            return true;
+#else
+            return false;
+#endif
+        case SettingId::FaceProbeRate:
+#if CONFIG_SC_FACE_PROBE
             return true;
 #else
             return false;

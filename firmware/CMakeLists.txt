@@ -26,3 +26,29 @@ endif()
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(stack-chan)
+
+# [StackChan fork] REQ-008: esp-sr's prebuilt libdl_lib.a carries an old esp-dl whose dl_tie728_* conv2d kernels have
+# the same 30 names as esp-dl 3.x but other arguments, and the linker used esp-sr's copies for esp-dl too (face
+# detection returned garbage, 25x slower). Rename esp-dl's own kernels while compiling it, so each library keeps its own.
+if(TARGET __idf_espressif__esp-dl)
+    foreach(bits s8 s16)
+        foreach(kernel 11cn 33cn hwcn)
+            foreach(tail "" _prelu _relu)
+                list(APPEND SC_ESPDL_KERNELS dl_tie728_${bits}_conv2d_${kernel}${tail})
+            endforeach()
+            if(bits STREQUAL "s16")
+                foreach(tail _bias _bias_prelu _bias_relu)
+                    list(APPEND SC_ESPDL_KERNELS dl_tie728_s16_conv2d_${kernel}${tail})
+                endforeach()
+            endif()
+        endforeach()
+    endforeach()
+    list(APPEND SC_ESPDL_KERNELS dl_tie728_s8_unaligned_conv2d_11cn dl_tie728_s8_unaligned_conv2d_33cn
+                                 dl_tie728_s8_unaligned_conv2d_hwcn)
+    foreach(sym IN LISTS SC_ESPDL_KERNELS)
+        target_compile_definitions(__idf_espressif__esp-dl PRIVATE ${sym}=espdl3_${sym})
+    endforeach()
+    # esp-dl asks for -O3; the app partition is nearly full, and the hot kernels are hand-written assembly anyway.
+    # SHELL: keeps it from being de-duplicated against the global -Os, so it lands after esp-dl's -O3.
+    target_compile_options(__idf_espressif__esp-dl PRIVATE "SHELL:-Os")
+endif()

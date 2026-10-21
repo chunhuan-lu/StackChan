@@ -55,6 +55,9 @@ CONFIG_SC_CLAUDE_SUIT_OFF_MINUTES=2
 CONFIG_SC_CLAUDE_SUIT_HEAD=y
 CONFIG_SC_CLAUDE_SUIT_HEAD_SPEED=600
 
+# Microphone buffer: keeps the wake word whole while camera work slows the audio task down (REQ-008).
+CONFIG_SC_MIC_BUFFER_MS=1000
+
 # Settings panel (gear next to Home) and voice settings (REQ-006). The values above are its defaults.
 CONFIG_SC_SETTINGS_PANEL=y
 
