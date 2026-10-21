@@ -134,6 +134,18 @@ ack（设备 → 电脑）：`{"t":"ack","id":N,"ok":true,"st":"idle|talk|other"
 - 每个 ack 都带 `ai`（bool）：AI Agent 已启动（已请求或正在运行）。
 - `tools/sc-agent/sc-flash.ps1` 通过 `POST /agent` 使用。
 
+### 协议 v1.3 新增（REQ-008 的固件，向后兼容）
+
+- 电脑 → 设备 `set`（`k`：设置键名，和面板、语音工具一致；`v`：整数或布尔，可省略）：修改一项设置，和在面板里修改
+  一样立即生效并保存；不带 `v` 时只读取。ack 的 `val` 字段带回值（已按范围限制），重复 id 重新确认时也带。未知键名
+  （或固件里没编进这项设置）：`"err":"key"`；`v` 既不是整数也不是布尔：`"err":"value"`。
+- 电脑 → 设备 `head`（`yaw` -128..128、`pitch` 5..85，单位度，可只给一个；`spd` 50..1000，默认 200）：转头。正 yaw
+  转向机器人自己的右边。固件在日志里记下转之前的角度，以及接下来 4 秒内 IMU 测到的绕竖直轴最大转速。两个角度都没给：
+  `"err":"angles"`。
+- 旧固件对这两个命令都回复 `"err":"type"`。
+- sc-agent：`POST /setting {"key": ..., "value": ...}`（结果在 `/status` 的 `robot_settings` 里）和
+  `POST /head {"yaw": ..., "pitch": ..., "speed": ...}`。见 [REQ-008](REQ-008-face-tracking.zh-CN.md)。
+
 ## 事件对应
 
 | Claude Code | 机器人 | 气泡 |

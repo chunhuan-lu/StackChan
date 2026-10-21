@@ -267,6 +267,17 @@ firmware, the sessions and link counters (`retries`, `timeouts`, `bad_frames` he
 `POST /agent` (same token) asks the robot to start the AI Agent, as a tap on its launcher icon would. The command is
 sent once the link is up (so it may be posted while the port is released for flashing) and dropped after 60 s.
 
+`POST /setting` changes a settings panel setting on the robot (firmware with protocol v1.3, REQ-008); without
+`"value"` it only reads it. The robot's answer appears in `/status` as `robot_settings`:
+
+```powershell
+$t = Get-Content $env:USERPROFILE\.sc-agent\token
+curl.exe -s --noproxy "*" -H "X-SC-Token: $t" -d '{\"key\": \"sleep\", \"value\": 0}' http://127.0.0.1:47123/setting
+```
+
+`POST /head {"yaw": 20, "pitch": 30, "speed": 150}` moves the head (degrees; yaw -128..128, positive to the robot's
+right; pitch 5..85; either angle may be left out). The robot logs the turn its IMU felt.
+
 ## Flashing with sc-idf.ps1
 
 The agent holds the COM port, so `idf.py flash` alone fails with "port busy". In an ESP-IDF PowerShell, from

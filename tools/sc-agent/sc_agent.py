@@ -673,6 +673,9 @@ class UsbLink:
             return
         if kind == "agent":
             log.info("robot: AI Agent %s", "started" if ack.get("ai") else "start requested")
+        elif kind == "set":
+            self._robot.setdefault("settings", {})[msg["k"]] = ack.get("val")
+            log.info("robot: setting %s = %s", msg["k"], ack.get("val"))
         elif kind == "state":
             self._confirmed_count = len(msg["sessions"])
             if isinstance(ack.get("n"), int) and ack["n"] != self._confirmed_count:
@@ -813,6 +816,51 @@ class AgentHTTPServer(ThreadingHTTPServer):
         log.exception("HTTP handler error")
 
 
+SETTING_KEY = re.compile(r"[a-z0-9_]{1,15}")
+
+
+def setting_command(body: bytes) -> dict[str, Any] | None:
+    """The robot command for POST /setting {"key": "sleep", "value": 0}: a settings panel key and an int (or bool);
+    without "value" the robot only reports the current value. None if the body is not like that."""
+    try:
+        payload = json.loads(body.decode("utf-8", "replace"))
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    key = payload.get("key")
+    if not isinstance(key, str) or not SETTING_KEY.fullmatch(key):
+        return None
+    command: dict[str, Any] = {"t": "set", "k": key}
+    if "value" in payload:
+        value = payload["value"]
+        if isinstance(value, bool):
+            value = int(value)
+        if not isinstance(value, int):
+            return None
+        command["v"] = value
+    return command
+
+
+def head_command(body: bytes) -> dict[str, Any] | None:
+    """The robot command for POST /head {"yaw": 20, "pitch": 30, "speed": 200}: degrees (yaw -128..128 like the voice
+    tool, pitch 5..85; the robot clamps), at least one of them; speed 50..1000, optional. None if not like that."""
+    try:
+        payload = json.loads(body.decode("utf-8", "replace"))
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    command: dict[str, Any] = {"t": "head"}
+    for field, key in (("yaw", "yaw"), ("pitch", "pitch"), ("speed", "spd")):
+        if field in payload:
+            value = payload[field]
+            if isinstance(value, bool) or not isinstance(value, int):
+                return None
+            command[key] = value
+    return command if "yaw" in command or "pitch" in command else None
+
+
 class HookRequestHandler(BaseHTTPRequestHandler):
     server: AgentHTTPServer
     server_version = f"sc-agent/{AGENT_VERSION}"
@@ -821,12 +869,12 @@ class HookRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlsplit(self.path).path
-        if path not in ("/hook", "/release", "/acquire", "/agent", "/shutdown"):
+        if path not in ("/hook", "/release", "/acquire", "/agent", "/setting", "/head", "/shutdown"):
             self._send(404, {"error": "not found"})
             return
         if not self._authorized(self.headers.get("X-SC-Token")):
             return
-        body = self._read_body(required=(path == "/hook"))
+        body = self._read_body(required=(path in ("/hook", "/setting", "/head")))
         if body is None:
             return
         agent = self.server.agent
@@ -849,6 +897,22 @@ class HookRequestHandler(BaseHTTPRequestHandler):
         elif path == "/agent":
             log.info("AI Agent start requested over HTTP")
             agent.link.queue_command({"t": "agent"})
+            self._send(200, {"ok": True})
+        elif path == "/setting":
+            command = setting_command(body)
+            if command is None:
+                self._send(400, {"error": 'body must be {"key": "<setting key>", "value": <int or bool, optional>}'})
+                return
+            log.info("setting %s requested over HTTP", command["k"])
+            agent.link.queue_command(command)  # the robot's answer shows up in /status as robot_settings
+            self._send(200, {"ok": True})
+        elif path == "/head":
+            command = head_command(body)
+            if command is None:
+                self._send(400, {"error": 'body must be {"yaw": <deg>, "pitch": <deg>, "speed": <50-1000>}, one angle at least'})
+                return
+            log.info("head move requested over HTTP: %s", {k: v for k, v in command.items() if k != "t"})
+            agent.link.queue_command(command)
             self._send(200, {"ok": True})
         else:
             log.info("shutdown requested over HTTP")
@@ -981,6 +1045,7 @@ class Agent:
             "serial": link["serial"],
             "robot_st": robot.get("st"),
             "robot_ai": robot.get("ai"),
+            "robot_settings": dict(robot.get("settings", {})),
             "boot": robot.get("boot"),
             "fw": robot.get("fw"),
             "sessions": self.table.snapshot()["sessions"],

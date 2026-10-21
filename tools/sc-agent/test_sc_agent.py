@@ -49,6 +49,7 @@ class FakeRobot:
         self.boot = 1001
         self.n = 0  # sessions the robot currently holds
         self.ai = False  # AI Agent started
+        self.settings = {"sleep": 1, "face_track": 1}
         self.drop = 0  # ignore this many next frames (frame loss) ...
         self.drop_type: str | None = None  # ... of this message type only, when set
         self.silent = False  # firmware without the link: never answers
@@ -76,6 +77,13 @@ class FakeRobot:
                 elif frame["t"] == "agent":
                     self.ai = True
                 ack = {"t": "ack", "id": frame["id"], "ok": True, "st": "idle"}
+                if frame["t"] == "set":
+                    if frame["k"] in self.settings:
+                        if "v" in frame:
+                            self.settings[frame["k"]] = max(0, min(1, frame["v"]))  # both test settings are bools
+                        ack["val"] = self.settings[frame["k"]]
+                    else:
+                        ack.update(ok=False, err="key")
                 if not self.legacy:
                     ack.update(boot=self.boot, n=self.n, ai=self.ai)
                 if frame["t"] == "hello":
@@ -336,6 +344,41 @@ class AgentTest(AgentTestCase):
         self.assertEqual(self.request("POST", "/agent", {}), (200, {"ok": True}))
         self.assertTrue(wait_until(lambda: self.agent.status()["robot_ai"] is True))
         self.assertEqual(self.robot.types().count("agent"), 1)
+
+    def test_setting_command(self):
+        self.wait_linked()
+        self.assertEqual(self.request("POST", "/setting", {"key": "sleep", "value": 0}, token="wrong")[0], 403)
+        self.assertEqual(self.request("POST", "/setting", {"key": "sleep", "value": False}), (200, {"ok": True}))
+        self.assertTrue(wait_until(lambda: self.agent.status()["robot_settings"] == {"sleep": 0}))
+        self.assertEqual(self.robot.settings["sleep"], 0)
+        sent = [f for f in self.robot.frames if f["t"] == "set"]
+        self.assertEqual((sent[0]["k"], sent[0]["v"]), ("sleep", 0))
+
+        self.assertEqual(self.request("POST", "/setting", {"key": "face_track"})[0], 200)  # read only
+        self.assertTrue(wait_until(lambda: self.agent.status()["robot_settings"].get("face_track") == 1))
+        self.assertNotIn("v", [f for f in self.robot.frames if f["t"] == "set"][-1])
+
+        self.assertEqual(self.request("POST", "/setting", {"key": "nope", "value": 1})[0], 200)
+        self.assertTrue(wait_until(lambda: self.agent.status()["stats"]["nacks"] == 1))
+        self.assertNotIn("nope", self.agent.status()["robot_settings"])
+
+    def test_setting_command_rejects_bad_bodies(self):
+        self.wait_linked()
+        for body in ({}, {"key": ""}, {"key": "Sleep"}, {"key": "a" * 16}, {"key": "sleep", "value": "1"},
+                     {"key": "sleep", "value": 1.5}, ["sleep"]):
+            self.assertEqual(self.request("POST", "/setting", body)[0], 400, body)
+        self.assertEqual(self.request("POST", "/setting", None)[0], 400)
+        time.sleep(0.2)
+        self.assertNotIn("set", self.robot.types())
+
+    def test_head_command(self):
+        self.wait_linked()
+        self.assertEqual(self.request("POST", "/head", {"yaw": 20, "speed": 150}), (200, {"ok": True}))
+        self.assertTrue(wait_until(lambda: "head" in self.robot.types()))
+        sent = [f for f in self.robot.frames if f["t"] == "head"][0]
+        self.assertEqual((sent["yaw"], sent["spd"], "pitch" in sent), (20, 150, False))
+        for body in ({}, {"speed": 100}, {"yaw": "20"}, {"pitch": 1.5}, {"yaw": True}, [20]):
+            self.assertEqual(self.request("POST", "/head", body)[0], 400, body)
 
     def test_agent_command_waits_for_link(self):
         self.wait_linked()

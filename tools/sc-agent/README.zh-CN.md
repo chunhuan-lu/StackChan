@@ -247,6 +247,17 @@ curl.exe -s --noproxy "*" -H "X-SC-Token: $(Get-Content $env:USERPROFILE\.sc-age
 `POST /agent`（同样带令牌）让机器人启动 AI Agent，效果和在主菜单点它的图标一样。命令在链路连上后才发出（所以烧录期间端口
 被释放时也可以先发），60 秒内没发出就丢弃。
 
+`POST /setting` 修改机器人设置面板里的一项设置（需要协议 v1.3 的固件，REQ-008）；不带 `"value"` 时只读取。机器人的回复
+出现在 `/status` 的 `robot_settings` 里：
+
+```powershell
+$t = Get-Content $env:USERPROFILE\.sc-agent\token
+curl.exe -s --noproxy "*" -H "X-SC-Token: $t" -d '{\"key\": \"sleep\", \"value\": 0}' http://127.0.0.1:47123/setting
+```
+
+`POST /head {"yaw": 20, "pitch": 30, "speed": 150}` 转头（单位度；yaw -128..128，正值转向机器人自己的右边；pitch
+5..85；可以只给一个角度）。机器人会在日志里记下 IMU 测到的转动。
+
 ## 用 sc-idf.ps1 烧录
 
 agent 占用着 COM 口，所以直接执行 `idf.py flash` 会报"端口被占用"。在 ESP-IDF PowerShell 中，从 `<repo>\firmware` 执行：

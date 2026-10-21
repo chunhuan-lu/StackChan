@@ -7,6 +7,12 @@
 #include <hal/hal.h>
 #include <hal/board/hal_bridge.h>
 #include <stackchan/sc/claude_status.h>
+#include <stackchan/stackchan.h>
+#include <sdkconfig.h>
+#if CONFIG_SC_IDLE_DIRECTOR || CONFIG_SC_SETTINGS_PANEL || CONFIG_SC_EXT_POWER_NO_STANDBY
+#define SC_LINK_SETTINGS 1
+#include <stackchan/sc/sc_settings.h>
+#endif
 #include <ArduinoJson.hpp>
 #include <driver/usb_serial_jtag.h>
 #include <esp_app_desc.h>
@@ -24,6 +30,7 @@
 #include <cinttypes>
 #include <cstdio>
 #include <cstring>
+#include <string>
 
 namespace sc::usb_link {
 
@@ -67,6 +74,8 @@ static std::atomic<uint32_t> s_agent_request_ms{0};  // "agent" received at (ms)
 static constexpr uint32_t kAgentRequestMs = 30 * 1000;
 static bool s_have_last_id  = false;
 static uint32_t s_last_id   = 0;
+static bool s_last_has_val  = false;  // the last message was a "set": its value goes into repeated acks too
+static int s_last_val       = 0;
 static char* s_line         = nullptr;  // PSRAM line buffer
 static size_t s_line_len    = 0;
 static bool s_line_overflow = false;
@@ -181,7 +190,8 @@ static void send_json(const ArduinoJson::JsonDocument& doc)
 
 // boot and n go into every ack, so the agent notices a restart that kept the USB port open and a
 // device-side drop of the sessions (staleness) without waiting for a failed request.
-static void send_ack(uint32_t id, const char* err, bool hello)
+// val: the value a "set" left the setting at (also in the ack of a repeated "set").
+static void send_ack(uint32_t id, const char* err, bool hello, const int* val = nullptr)
 {
     ArduinoJson::JsonDocument doc(&s_allocator);
     doc["t"]  = "ack";
@@ -189,6 +199,9 @@ static void send_ack(uint32_t id, const char* err, bool hello)
     doc["ok"] = err == nullptr;
     if (err) {
         doc["err"] = err;
+    }
+    if (val) {
+        doc["val"] = *val;
     }
     doc["st"]   = robot_state();
     doc["ai"]   = GetHAL().isXiaozhiStartRequested() || hal_bridge::is_xiaozhi_ready();  // AI Agent started
@@ -200,6 +213,63 @@ static void send_ack(uint32_t id, const char* err, bool hello)
         doc["up"] = static_cast<uint32_t>(esp_timer_get_time() / 1000000);
     }
     send_json(doc);
+}
+
+// "head": move the head in degrees (yaw -128..128, + = the robot's right as the gyro shows; pitch 5..85, + = up) at
+// spd 50..1000. Either angle may be left out. Logs the angles before and the turn the IMU felt.
+static const char* handle_head(const ArduinoJson::JsonDocument& doc)
+{
+    const bool has_yaw = doc["yaw"].is<int>(), has_pitch = doc["pitch"].is<int>();
+    if (!has_yaw && !has_pitch) {
+        return "angles";
+    }
+    const int speed = std::clamp(doc["spd"] | 200, 50, 1000);
+    LvglLockGuard lock;  // the stackchan update runs under it
+    auto& motion    = GetStackChan().motion();
+    const auto from = motion.getCurrentAngles();
+    const int yaw   = has_yaw ? std::clamp(doc["yaw"].as<int>(), -128, 128) * 10 : 0;
+    const int pitch = has_pitch ? std::clamp(doc["pitch"].as<int>(), 5, 85) * 10 : 0;
+    if (has_yaw) {
+        motion.yawServo().moveWithSpeed(yaw, speed);
+    }
+    if (has_pitch) {
+        motion.pitchServo().moveWithSpeed(pitch, speed);
+    }
+    ESP_LOGI(TAG, "head from (%d, %d) to (%s, %s) x0.1 deg at %d (over USB)", from.x, from.y,
+             has_yaw ? std::to_string(yaw).c_str() : "-", has_pitch ? std::to_string(pitch).c_str() : "-", speed);
+    GetHAL().watchImuTurn(4000);
+    return nullptr;
+}
+
+// "set": one setting of the settings panel by its key (as the voice tool names it), applied and saved like a panel
+// change; without "v" it only reads the value. The ack carries the value in "val" (clamped to the range).
+static const char* handle_set(const ArduinoJson::JsonDocument& doc, int& val)
+{
+#if SC_LINK_SETTINGS
+    auto& settings   = stackchan::sc::ScSettings::get();
+    const char* key  = doc["k"] | "";
+    const auto* info = settings.find(key);
+    if (!info) {
+        return "key";  // unknown, or not built into this firmware
+    }
+    const auto v = doc["v"];
+    if (v.is<bool>()) {
+        settings.set(info->id, v.as<bool>() ? 1 : 0);
+    } else if (v.is<int>()) {
+        settings.set(info->id, v.as<int>());
+    } else if (!v.isNull()) {
+        return "value";
+    }
+    val = settings.value(info->id);
+    if (!v.isNull()) {
+        ESP_LOGI(TAG, "setting %s = %d (over USB)", key, val);
+    }
+    return nullptr;
+#else
+    (void)doc;
+    (void)val;
+    return "type";
+#endif
 }
 
 static const char* handle_state(const ArduinoJson::JsonDocument& doc, uint32_t now)
@@ -260,11 +330,12 @@ static void dispatch(const ArduinoJson::JsonDocument& doc)
     if (hello) {
         s_have_last_id = false;  // a new agent run starts its ids again
     } else if (s_have_last_id && id == s_last_id) {
-        send_ack(id, nullptr, false);  // retry of a message that was already applied
+        send_ack(id, nullptr, false, s_last_has_val ? &s_last_val : nullptr);  // retry of a message already applied
         return;
     }
     s_have_last_id = true;
     s_last_id      = id;
+    s_last_has_val = false;
 
     const char* err = nullptr;
     if (hello) {
@@ -285,10 +356,15 @@ static void dispatch(const ArduinoJson::JsonDocument& doc)
             ESP_LOGI(TAG, "AI Agent requested over USB");
             s_agent_request_ms = now | 1;  // 0 = none
         }
+    } else if (std::strcmp(type, "head") == 0) {
+        err = handle_head(doc);
+    } else if (std::strcmp(type, "set") == 0) {
+        err            = handle_set(doc, s_last_val);
+        s_last_has_val = err == nullptr;
     } else {
         err = "type";
     }
-    send_ack(id, err, hello);
+    send_ack(id, err, hello, s_last_has_val ? &s_last_val : nullptr);
 }
 
 static int hex_value(char c)

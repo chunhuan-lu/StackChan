@@ -146,6 +146,19 @@ Staleness: if the device receives no valid frame for 30 s it drops the sessions 
 - Every ack carries `ai` (bool): the AI Agent was started (requested or running).
 - Used by `tools/sc-agent/sc-flash.ps1` through `POST /agent`.
 
+### Protocol v1.3 additions (REQ-008 firmware, backwards compatible)
+
+- Host → device `set` (`k`: settings key as in the panel and the voice tool, `v`: int or bool, optional): change one
+  setting, applied and saved like a panel change; without `v` it only reads it. The ack carries the value in `val`
+  (clamped to the range), also when a repeated id is re-acknowledged. Unknown keys (or settings not built in):
+  `"err":"key"`; a `v` that is neither int nor bool: `"err":"value"`.
+- Host → device `head` (`yaw` -128..128, `pitch` 5..85 in degrees, either may be left out; `spd` 50..1000, default
+  200): move the head. Positive yaw turns to the robot's right. The firmware logs the angles before the move and the
+  strongest turn about the vertical the IMU felt in the next 4 s. Missing both angles: `"err":"angles"`.
+- Older firmware answers both with `"err":"type"`.
+- sc-agent: `POST /setting {"key": ..., "value": ...}` (values in `/status` as `robot_settings`) and
+  `POST /head {"yaw": ..., "pitch": ..., "speed": ...}`. See [REQ-008](REQ-008-face-tracking.md).
+
 ## Event mapping
 
 | Claude Code | Robot | Bubble |
