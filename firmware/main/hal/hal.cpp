@@ -209,7 +209,7 @@ void Hal::startXiaozhi()
     stackchan::sc::ScSettings::get().reload();  // [StackChan fork] pick up "activity" from the Settings app
 #endif
 #if CONFIG_SC_FACE_PROBE
-    sc::face_probe::start();  // [StackChan fork] REQ-008 prototype
+    sc::face_probe::start();  // [StackChan fork] REQ-008 face tracking
 #endif
 
     auto& motion = GetStackChan().motion();

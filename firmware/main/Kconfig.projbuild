@@ -1239,13 +1239,14 @@ menu "StackChan fork options"
     menu "Camera"
 
     config SC_FACE_PROBE
-        bool "Face detection probe (prototype)"
+        bool "Face tracking"
         default n
         depends on IDF_TARGET_ESP32S3
         help
-            REQ-008 step 1: while the AI Agent is idle, a low-priority task on core 1 runs ESP-DL face
-            detection on the camera frames, draws the face box on the screen and logs timing and memory.
-            For measuring only; no behaviour. Frames never leave the device.
+            REQ-008: while the AI Agent is idle, a low-priority task on core 1 runs ESP-DL face detection on
+            the camera frames; the idle director turns the eyes and the head to the face it finds. Settings
+            panel, "Camera": on/off, head on/off, checks per second and a debug face box. Frames are never
+            stored and never leave the device. Adds about 400 KB of code and model to the app.
 
     config SC_MIC_BUFFER_MS
         int "Microphone buffer (ms, 0 = off)"

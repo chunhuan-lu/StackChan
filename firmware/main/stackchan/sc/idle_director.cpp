@@ -180,6 +180,7 @@ IdleDirectorModifier::~IdleDirectorModifier()
 
     if (_sc && _sc->hasAvatar()) {
         auto& av = _sc->avatar();
+        drop_gaze(*_sc);  // conversations start with centred eyes
         _buddy.hide(av);
         _face.clear(av);  // conversations use the default features (the speaking mouth)
         if (_anim) {
@@ -328,6 +329,7 @@ void IdleDirectorModifier::_update(Modifiable& sc)
     update_backlight(now);
     update_suit(sc, now);
     run_head_keys(sc, now);
+    update_face_track(sc, now);
     update_face(sc, now);
 
     if (now >= _next_led) {
@@ -762,6 +764,13 @@ void IdleDirectorModifier::note_interaction(uint32_t now)
 
 void IdleDirectorModifier::update_sleep_state(Modifiable& sc, uint32_t now)
 {
+    if (!ScSettings::get().enabled(SettingId::Sleep)) {  // "Sleeping" switched off: stay awake
+        if (_phase == Phase::Sleeping) {
+            mclog::tagInfo(_tag, "sleeping switched off");
+            wake_up(sc, now, false);
+        }
+        return;
+    }
     const bool night        = is_night();
     const bool should_sleep = night || _dark;
     auto& mood              = GetIdleMood();
@@ -1114,6 +1123,7 @@ void IdleDirectorModifier::play(Modifiable& sc, std::unique_ptr<FaceAnimation> a
                                 uint32_t now)
 {
     stop_anim(sc);
+    drop_gaze(sc);  // the animation moves the eyes by its own offsets
     // Animations work on the default features: drop a face they would fight with before they capture
     // their base values. Eye-only idle animations (glances) may run on top of a face that keeps the eyes.
     if (anim->touchesMouth() || purpose != AnimPurpose::Idle || !_face.allowsGlances()) {
@@ -1373,6 +1383,7 @@ void IdleDirectorModifier::show_temp_face(Modifiable& sc, FaceStyle style, uint3
     sc.avatar().setEmotion(avatar::Emotion::Neutral);
     _temp_face       = style;
     _temp_face_until = now + durationMs;
+    drop_gaze(sc);  // some drawn faces move the default eyes by offsets
     _face.set(sc.avatar(), avatar_panel(sc), style, now);
     _face_since = now;
     mclog::tagInfo(_tag, "face: {} ({} ms)", face_style_name(style), durationMs);
@@ -1520,6 +1531,7 @@ void IdleDirectorModifier::update_face(Modifiable& sc, uint32_t now)
         if (_anim) {
             stop_anim(sc);  // an eye animation captured the old face's sizes and offsets: end it first
         }
+        drop_gaze(sc);  // some drawn faces move the default eyes by offsets
         _face.set(av, avatar_panel(sc), desired, now);
         _face_since = now;
     }

@@ -26,6 +26,7 @@ namespace stackchan::sc {
 enum class SettingId : uint8_t {
     Activity,
     HeadMoves,
+    Sleep,
     WakeHour,
     SleepHour,
     DarkLux,
@@ -47,6 +48,9 @@ enum class SettingId : uint8_t {
     SuitHead,
     SuitHeadSpeed,
     UsbAwake,
+    FaceTrack,
+    FaceTrackHead,
+    FaceBox,
     FaceProbeRate,
     Count,
 };

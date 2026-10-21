@@ -89,6 +89,8 @@ static const SettingInfo kSettings[] = {
     {SettingId::HeadMoves, "head_moves", "Idle", "Head moves / hour", "", SettingType::Int,
      CONFIG_SC_IDLE_HEAD_MOVES_PER_HOUR, 0, 120, 5, nullptr,
      "Spontaneous head movements per hour at medium activity."},
+    {SettingId::Sleep, "sleep", "Sleep", "Sleeping", "", SettingType::Bool, 1, 0, 1, 1, nullptr,
+     "The robot sleeps at night, in a dark room and for a nap when bored; off keeps it awake."},
     {SettingId::WakeHour, "wake_hour", "Sleep", "Wake up at", ":00", SettingType::Int, CONFIG_SC_IDLE_WAKE_HOUR, 0,
      23, 1, nullptr, "Local hour when the robot wakes up."},
     {SettingId::SleepHour, "sleep_hour", "Sleep", "Go to sleep at", ":00", SettingType::Int,
@@ -135,11 +137,18 @@ static const SettingInfo kSettings[] = {
      "Servo speed of those head movements, 100 slow to 1000 fastest."},
     {SettingId::UsbAwake, "usb_awake", "Power", "No standby on USB", "", SettingType::Bool, 1, 0, 1, 1, nullptr,
      "Never power-save or power off while USB power is present."},
+    {SettingId::FaceTrack, "face_track", "Camera", "Look at faces", "", SettingType::Bool, 1, 0, 1, 1, nullptr,
+     "While idle the robot looks for faces with the camera and its eyes follow the one in front of it."},
+    {SettingId::FaceTrackHead, "face_head", "Camera", "Turn head to faces", "", SettingType::Bool, 1, 0, 1, 1,
+     nullptr, "The head turns too, so the face stays in the middle of the camera view."},
+    {SettingId::FaceBox, "face_box", "Camera", "Show face box", "", SettingType::Bool, 0, 0, 1, 1, nullptr,
+     "Draw a box around the detected face on the screen (for testing)."},
     {SettingId::FaceProbeRate, "face_probe", "Camera", "Face checks / s", "", SettingType::Int, 1, 0, 4, 1, nullptr,
-     "Face detection prototype: checks per second at most, 0 = off. Fewer when the wake word falls behind."},
+     "Face detection: checks per second while looking for a face, 0 = camera off. Fewer when the wake word falls behind."},
 };
 static_assert(sizeof(kSettings) / sizeof(kSettings[0]) == static_cast<size_t>(SettingId::Count),
               "one table entry per SettingId, in enum order");
+static_assert(static_cast<size_t>(SettingId::Count) <= 32, "_dirty has one bit per SettingId");
 
 static bool compiled_in(SettingId id)
 {
@@ -164,6 +173,9 @@ static bool compiled_in(SettingId id)
 #else
             return false;
 #endif
+        case SettingId::FaceTrack:
+        case SettingId::FaceTrackHead:
+        case SettingId::FaceBox:
         case SettingId::FaceProbeRate:
 #if CONFIG_SC_FACE_PROBE
             return true;

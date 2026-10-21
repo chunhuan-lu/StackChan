@@ -4,11 +4,14 @@
  * SPDX-License-Identifier: MIT
  */
 #include "face_probe.h"
+#include <sdkconfig.h>
+
+#if CONFIG_SC_FACE_PROBE
 #include <hal/hal.h>
 #include <hal/board/hal_bridge.h>
-#include "human_face_detect.hpp"
 #include <hal/board/cores3_audio_codec.h>
 #include <stackchan/sc/sc_settings.h>
+#include "human_face_detect.hpp"
 #include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <esp_timer.h>
@@ -16,25 +19,75 @@
 #include <freertos/task.h>
 #include <lvgl.h>
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 
 namespace sc::face_probe {
 
+using stackchan::sc::setting;
+using stackchan::sc::SettingId;
+
 static const char* TAG = "FaceProbe";
 
-static constexpr uint32_t kIdleWaitMs = 500;  // polling while the AI Agent is busy
+static constexpr uint32_t kIdleWaitMs = 500;  // polling while nobody wants detections
+static constexpr uint32_t kPollMs     = 20;
 // Detection slows the wake word down (PSRAM and cache contention): start one only when the microphone buffer has been
-// read down to this.
+// read down to this, and leave at least kMinGapMs between two even when the director asks for one.
 static constexpr uint32_t kMaxBacklogMs = 80;
-static constexpr int64_t kStatsUs     = 10 * 1000 * 1000;
-static constexpr bool kMirror         = true;  // the camera looks at the user: draw the box like a mirror
-// Diagnostic: step through these rates, one statistics window each, instead of using the setting.
-static constexpr bool kRateSweep = false;
-static constexpr int kSweep[]    = {0, 1, 2, 4};
+static constexpr uint32_t kMinGapMs     = 300;
+static constexpr uint32_t kWantedMs     = 2000;
+// The DVP camera has one buffer: the frame waiting in it was taken right after the previous grab. Older than this,
+// it is dropped and the next one taken; a frame takes 50 ms at 20 fps.
+static constexpr uint32_t kFreshMs   = 100;
+static constexpr uint32_t kFrameMs   = 50;
+static constexpr int64_t kStatsUs    = 30 * 1000 * 1000;
+static constexpr int kDarkLuma       = 40;   // mean luma below this: too dark to find a face (black level is ~28)
+static constexpr double kFlatVar     = 30;   // both byte lanes vary less: a flat frame (black level), no detection
+static constexpr bool kMirror        = true;  // the camera looks at the user: draw the box like a mirror
+
+static std::mutex s_mutex;
+static Sighting s_latest;
+static bool s_have_latest = false;
+static std::atomic<uint32_t> s_wanted_at{0};
+static std::atomic<bool> s_check{false};
 
 static lv_obj_t* s_box   = nullptr;
 static lv_obj_t* s_label = nullptr;
+
+bool latest(Sighting& out)
+{
+    std::lock_guard<std::mutex> lock(s_mutex);
+    if (!s_have_latest) {
+        return false;
+    }
+    out = s_latest;
+    return true;
+}
+
+void keep_running()
+{
+    s_wanted_at = GetHAL().millis() | 1;  // 0 = never
+}
+
+void request_check()
+{
+    s_check = true;
+}
+
+static bool wanted(uint32_t now)
+{
+    const uint32_t at = s_wanted_at;  // may be a millisecond ahead of now (| 1, or written after now was read)
+    return at != 0 && static_cast<int32_t>(now - at) < static_cast<int32_t>(kWantedMs);
+}
+
+static void publish(const Sighting& s)
+{
+    std::lock_guard<std::mutex> lock(s_mutex);
+    s_latest      = s;
+    s_have_latest = true;
+}
 
 static inline uint8_t clamp8(int v)
 {
@@ -59,8 +112,14 @@ static void yuv422_to_rgb888_half(const uint8_t* src, uint8_t* dst, int w, int h
     }
 }
 
-// Luma varies across the picture, chroma stays near 128: the byte lane with the larger variance holds Y.
-static bool luma_first(const uint8_t* src, size_t len)
+// Mean and variance of the even and the odd bytes, from every 64th byte pair. Luma varies across the picture, chroma
+// stays near 128: the lane with the larger variance holds Y. A flat frame (dark room, covered lens) has neither.
+struct FrameLook {
+    double mean[2];
+    double var[2];
+};
+
+static FrameLook look_at(const uint8_t* src, size_t len)
 {
     double sum[2] = {0, 0}, sq[2] = {0, 0};
     size_t n      = 0;
@@ -70,13 +129,12 @@ static bool luma_first(const uint8_t* src, size_t len)
             sq[k] += static_cast<double>(src[i + k]) * src[i + k];
         }
     }
-    double var[2];
-    for (int k = 0; k < 2; ++k) {
-        const double mean = sum[k] / n;
-        var[k]            = sq[k] / n - mean * mean;
+    FrameLook look{};
+    for (int k = 0; k < 2 && n > 0; ++k) {
+        look.mean[k] = sum[k] / n;
+        look.var[k]  = sq[k] / n - look.mean[k] * look.mean[k];
     }
-    ESP_LOGI(TAG, "byte lanes: even var %.0f, odd var %.0f -> luma %s", var[0], var[1], var[0] >= var[1] ? "even" : "odd");
-    return var[0] >= var[1];
+    return look;
 }
 
 static void create_overlay()
@@ -98,6 +156,7 @@ static void create_overlay()
     lv_obj_add_flag(s_label, LV_OBJ_FLAG_HIDDEN);
 }
 
+// Debug overlay (setting "face_box"): the face box in screen coordinates, mirrored.
 static void show_box(bool found, int x1, int y1, int x2, int y2, int w, float score, int det_ms)
 {
     LvglLockGuard lock;
@@ -133,7 +192,7 @@ static void log_memory(const char* when)
 struct CpuSample {
     int64_t at;
     uint32_t audio, idle0, idle1;
-    uint32_t overflows;  // microphone buffers lost
+    uint32_t overflows;  // microphone audio lost, in 10 ms chunks
 };
 
 static CpuSample cpu_sample()
@@ -159,16 +218,26 @@ static CpuSample cpu_sample()
     return s;
 }
 
-static void log_cpu(const CpuSample& from, const CpuSample& to, int rate, int frames, uint32_t max_backlog, int held)
-{
-    const double us = static_cast<double>(to.at - from.at);
-    ESP_LOGI(TAG,
-             "cpu (rate %d, %d frames): audio_input %.0f%%, idle core 0 %.0f%%, idle core 1 %.0f%%; mic lost %u x 10 ms, "
-             "backlog max %u ms, held back %d x",
-             rate, frames, (to.audio - from.audio) * 100.0 / us, (to.idle0 - from.idle0) * 100.0 / us,
-             (to.idle1 - from.idle1) * 100.0 / us, (unsigned)(to.overflows - from.overflows), (unsigned)max_backlog,
-             held);
-}
+struct Stats {
+    CpuSample from{};
+    int frames = 0, faces = 0, held = 0, dark = 0;
+    int64_t sum_det = 0, max_det = 0;
+    uint32_t max_backlog = 0;
+
+    void log(const CpuSample& to)
+    {
+        const double us = static_cast<double>(to.at - from.at);
+        ESP_LOGI(TAG,
+                 "%d detections in %.0f s (%d frames dark or flat), face in %d, detect avg %d ms (max %d); audio_input "
+                 "%.0f%%, idle core 0 %.0f%%, core 1 %.0f%%; mic lost %u x 10 ms, backlog max %u ms, held back %d x",
+                 frames, us / 1e6, dark, faces, frames ? static_cast<int>(sum_det / frames / 1000) : 0,
+                 static_cast<int>(max_det / 1000), (to.audio - from.audio) * 100.0 / us,
+                 (to.idle0 - from.idle0) * 100.0 / us, (to.idle1 - from.idle1) * 100.0 / us,
+                 (unsigned)(to.overflows - from.overflows), (unsigned)max_backlog, held);
+        *this = Stats{};
+        from  = to;
+    }
+};
 
 static void probe_task(void*)
 {
@@ -178,66 +247,70 @@ static void probe_task(void*)
     HumanFaceDetect* detect = nullptr;
     uint8_t* rgb            = nullptr;
     size_t rgb_size         = 0;
-    int lane                = -1;  // 1: luma in even bytes
+    int lane                = 1;  // luma in the even bytes (GC0308 here), until a clear frame says otherwise
+    bool lane_known         = false;
+    bool first_frame        = true;
+    uint32_t seq            = 0;
+    uint32_t last_grab      = 0;  // end of the last frame grab
+    uint32_t last_detect    = 0;  // end of the last detection
+    bool box_shown          = false;
+    int rate_logged         = -1;
 
-    // Statistics per window
-    int frames = 0, faces = 0;
-    int64_t sum_grab = 0, sum_conv = 0, sum_det = 0, max_det = 0;
-    int64_t window_start = esp_timer_get_time();
-    bool had_face        = false;
-    int64_t next_box_log = 0;
-
-    int rate_logged     = -1;
-    CpuSample cpu_from  = cpu_sample();
-    int cpu_frames      = 0;
-    uint32_t max_backlog = 0;
-    int held             = 0;
-    size_t sweep        = 0;
+    Stats stats;
+    stats.from = cpu_sample();
     while (true) {
-        // Checks per second from the settings panel (prototype): 0 pauses detection.
-        int rate = kRateSweep ? kSweep[sweep] : stackchan::sc::setting(stackchan::sc::SettingId::FaceProbeRate);
-        if (esp_timer_get_time() - cpu_from.at >= kStatsUs) {
-            const CpuSample now = cpu_sample();
-            log_cpu(cpu_from, now, rate, cpu_frames, max_backlog, held);
-            cpu_from    = now;
-            cpu_frames  = 0;
-            max_backlog = 0;
-            held        = 0;
-            if (kRateSweep) {
-                sweep = (sweep + 1) % (sizeof(kSweep) / sizeof(kSweep[0]));
-                rate  = kSweep[sweep];
-            }
+        if (esp_timer_get_time() - stats.from.at >= kStatsUs) {
+            stats.log(cpu_sample());
         }
+        const int rate     = setting(SettingId::FaceProbeRate);
+        const bool box_on  = setting(SettingId::FaceBox) != 0;
+        const uint32_t now = GetHAL().millis();
         if (rate != rate_logged) {
             ESP_LOGI(TAG, "rate %d/s", rate);
             rate_logged = rate;
         }
-        if (rate <= 0 || !hal_bridge::is_xiaozhi_ready() || !hal_bridge::is_xiaozhi_idle()) {
-            if (had_face) {
+        if (box_shown && !box_on) {
+            show_box(false, 0, 0, 0, 0, 0, 0, 0);
+            box_shown = false;
+        }
+        if (rate <= 0 || !wanted(now) || !hal_bridge::is_xiaozhi_ready() || !hal_bridge::is_xiaozhi_idle()) {
+            if (box_shown) {
                 show_box(false, 0, 0, 0, 0, 0, 0, 0);
-                had_face = false;
+                box_shown = false;
             }
+            s_check = false;
             vTaskDelay(pdMS_TO_TICKS(kIdleWaitMs));
             continue;
         }
-        if (cores3_audio_rx_backlog_ms() > kMaxBacklogMs) {
-            ++held;
-            vTaskDelay(pdMS_TO_TICKS(20));
+        // Next detection: at the rate, or on request (the head has settled), but never back to back.
+        const uint32_t since = now - last_detect;
+        if (since < 1000u / static_cast<uint32_t>(rate) && !(s_check && since >= kMinGapMs)) {
+            vTaskDelay(pdMS_TO_TICKS(kPollMs));
             continue;
         }
+        if (cores3_audio_rx_backlog_ms() > kMaxBacklogMs) {
+            ++stats.held;
+            vTaskDelay(pdMS_TO_TICKS(kPollMs));
+            continue;
+        }
+        s_check = false;
+
         auto* camera = hal_bridge::board_get_camera();
         if (!camera) {
             ESP_LOGW(TAG, "no camera, stopping");
             break;
         }
-
-        const int64_t t0 = esp_timer_get_time();
-        if (!camera->StreamCaptures()) {
+        if (now - last_grab > kFreshMs) {
+            camera->StreamCaptures();  // drop the frame that waited in the buffer
+        }
+        const bool grabbed = camera->StreamCaptures();
+        last_grab          = GetHAL().millis();
+        if (!grabbed) {
             vTaskDelay(pdMS_TO_TICKS(kIdleWaitMs));
             continue;
         }
-        const int64_t t1   = esp_timer_get_time();
-        const uint8_t* yuv = camera->GetFrameData();
+        const uint32_t taken = last_grab - kFrameMs;
+        const uint8_t* yuv   = camera->GetFrameData();
         const int w = camera->GetFrameWidth(), h = camera->GetFrameHeight();
         const size_t len = camera->GetFrameSize();
         if (!yuv || w <= 0 || h <= 0 || len < static_cast<size_t>(w) * h * 2) {
@@ -246,9 +319,27 @@ static void probe_task(void*)
             vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
         }
-        if (lane < 0) {
-            ESP_LOGI(TAG, "frames: %dx%d, %u bytes, format 0x%08x", w, h, (unsigned)len, camera->GetFrameFormat());
-            lane = luma_first(yuv, len) ? 1 : 0;
+        const FrameLook look = look_at(yuv, len);
+        const double var_max = std::max(look.var[0], look.var[1]);
+        if (first_frame) {
+            first_frame = false;
+            ESP_LOGI(TAG, "frames: %dx%d, %u bytes, format 0x%08x; even bytes mean %.0f var %.0f, odd %.0f / %.0f", w, h,
+                     (unsigned)len, camera->GetFrameFormat(), look.mean[0], look.var[0], look.mean[1], look.var[1]);
+        }
+        if (!lane_known && var_max >= 100 && var_max >= 2 * std::min(look.var[0], look.var[1])) {
+            lane       = look.var[0] >= look.var[1] ? 1 : 0;
+            lane_known = true;
+            ESP_LOGI(TAG, "luma in the %s bytes (variance %.0f / %.0f)", lane == 1 ? "even" : "odd", look.var[0],
+                     look.var[1]);
+        }
+        if (var_max < kFlatVar || look.mean[lane == 1 ? 0 : 1] < kDarkLuma) {
+            Sighting dark;  // nothing to find: publish "no face" without running the detector
+            dark.seq    = ++seq;
+            dark.at     = taken;
+            last_detect = GetHAL().millis();
+            publish(dark);
+            ++stats.dark;
+            continue;
         }
         const int dw = w / 2, dh = h / 2;  // detection size
         if (rgb_size < static_cast<size_t>(dw) * dh * 3) {
@@ -261,66 +352,57 @@ static void probe_task(void*)
             }
         }
         yuv422_to_rgb888_half(yuv, rgb, w, h, lane == 1);
-        const int64_t t2 = esp_timer_get_time();
 
         if (!detect) {
             detect = new HumanFaceDetect();
         }
+        const int64_t t0     = esp_timer_get_time();
         dl::image::img_t img = {rgb, static_cast<uint16_t>(dw), static_cast<uint16_t>(dh),
                                 dl::image::DL_IMAGE_PIX_TYPE_RGB888};
         auto& results    = detect->run(img);
-        const int64_t t3 = esp_timer_get_time();
-        max_backlog      = std::max(max_backlog, cores3_audio_rx_backlog_ms());
+        const int64_t t1 = esp_timer_get_time();
+        last_detect      = GetHAL().millis();
+        stats.max_backlog = std::max(stats.max_backlog, cores3_audio_rx_backlog_ms());
         static bool loaded_logged = false;
         if (!loaded_logged) {
             loaded_logged = true;
-            log_memory("after the first detection (model loaded)");
+            log_memory("model loaded");
         }
 
-        // The biggest face is the closest one.
+        // The biggest face is the closest one (boxes in detection size).
         const dl::detect::result_t* best = nullptr;
         for (const auto& r : results) {
-            if (r.box.size() >= 4 && (!best || r.box_area() > best->box_area())) {  // boxes in detection size
+            if (r.box.size() >= 4 && (!best || r.box_area() > best->box_area())) {
                 best = &r;
             }
         }
-        const int det_ms = static_cast<int>((t3 - t2) / 1000);
+        Sighting s;
+        s.seq = ++seq;
+        s.at  = taken;
         if (best) {
-            show_box(true, best->box[0] * 2, best->box[1] * 2, best->box[2] * 2, best->box[3] * 2, w, best->score, det_ms);
-            if (!had_face || t3 >= next_box_log) {
-                ESP_LOGI(TAG, "face %d/%u: box (%d,%d)-(%d,%d), score %.2f, detect %d ms", had_face ? 1 : 0,
-                         (unsigned)results.size(), best->box[0], best->box[1], best->box[2], best->box[3], best->score,
-                         det_ms);
-                next_box_log = t3 + 1000 * 1000;
-            }
-            ++faces;
-        } else if (had_face) {
+            const int x1 = std::clamp(best->box[0], 0, dw), y1 = std::clamp(best->box[1], 0, dh);
+            const int x2 = std::clamp(best->box[2], 0, dw), y2 = std::clamp(best->box[3], 0, dh);
+            s.found = true;
+            s.cx    = (x1 + x2) * 0.5f / dw;
+            s.cy    = (y1 + y2) * 0.5f / dh;
+            s.size  = static_cast<float>(x2 - x1) / dw;
+            s.score = best->score;
+            ++stats.faces;
+        }
+        publish(s);
+
+        const int det_ms = static_cast<int>((t1 - t0) / 1000);
+        if (box_on && best) {
+            show_box(true, best->box[0] * 2, best->box[1] * 2, best->box[2] * 2, best->box[3] * 2, w, best->score,
+                     det_ms);
+            box_shown = true;
+        } else if (box_shown) {
             show_box(false, 0, 0, 0, 0, 0, 0, 0);
-            ESP_LOGI(TAG, "face lost");
+            box_shown = false;
         }
-        had_face = best != nullptr;
-
-        ++frames;
-        ++cpu_frames;
-        sum_grab += t1 - t0;
-        sum_conv += t2 - t1;
-        sum_det += t3 - t2;
-        max_det = std::max(max_det, t3 - t2);
-        if (t3 - window_start >= kStatsUs) {
-            const double secs = (t3 - window_start) / 1e6;
-            ESP_LOGI(TAG, "%d frames in %.1f s (%.1f fps), face in %d; avg grab %d ms, convert %d ms, detect %d ms (max %d)",
-                     frames, secs, frames / secs, faces, static_cast<int>(sum_grab / frames / 1000),
-                     static_cast<int>(sum_conv / frames / 1000), static_cast<int>(sum_det / frames / 1000),
-                     static_cast<int>(max_det / 1000));
-            log_memory("memory");
-            frames = faces = 0;
-            sum_grab = sum_conv = sum_det = max_det = 0;
-            window_start = t3;
-        }
-
-        const uint32_t period = 1000u / static_cast<uint32_t>(rate);
-        const uint32_t spent  = static_cast<uint32_t>((esp_timer_get_time() - t0) / 1000);
-        vTaskDelay(pdMS_TO_TICKS(spent < period ? period - spent : 20));
+        ++stats.frames;
+        stats.sum_det += t1 - t0;
+        stats.max_det = std::max(stats.max_det, t1 - t0);
     }
     delete detect;
     heap_caps_free(rgb);
@@ -343,3 +425,19 @@ void start()
 }
 
 }  // namespace sc::face_probe
+
+#else  // CONFIG_SC_FACE_PROBE
+
+namespace sc::face_probe {
+
+void start() {}
+bool latest(Sighting&)
+{
+    return false;
+}
+void keep_running() {}
+void request_check() {}
+
+}  // namespace sc::face_probe
+
+#endif  // CONFIG_SC_FACE_PROBE

@@ -29,6 +29,7 @@ struct IdleMood {
     float affection            = 0.3f;   // 0 .. 1, grows slowly with petting
     float headTokens           = -1.0f;  // servo budget for spontaneous head moves, < 0 = uninitialised
     uint32_t lastInteractionMs = 0;
+    uint32_t lastFaceMs        = 0;  // last time the camera saw a face (REQ-008)
 };
 
 IdleMood& GetIdleMood();
@@ -38,7 +39,8 @@ IdleMood& GetIdleMood();
  *
  * Owns: daily schedule and sleeping (night or darkness), head-touch taps / long press / stroke
  * afterglow, pick-up and tilt reactions, screen-only micro animations, the mood light on LEDs
- * 1-5 and 7-11 (LED 0 and 6 are left to the device status indicator) and a servo budget.
+ * 1-5 and 7-11 (LED 0 and 6 are left to the device status indicator), a servo budget and face
+ * tracking (eyes and head follow the face the camera sees, idle_director_face.cpp).
  */
 class IdleDirectorModifier : public Modifier {
 public:
@@ -137,6 +139,17 @@ private:
     BuddyPose buddy_pose(uint32_t now);
     void on_buddy_cue(BuddyCue cue, int pitch_now, uint32_t now);
     void run_head_keys(Modifiable& sc, uint32_t now);
+    // Face tracking (REQ-008), idle_director_face.cpp
+    void update_face_track(Modifiable& sc, uint32_t now);
+    void on_face_sighting(Modifiable& sc, float cx, float cy, uint32_t taken, uint32_t now);
+    bool face_head_allowed(Modifiable& sc) const;
+    bool frame_still(uint32_t taken) const;
+    void note_turn_result(bool wrong, uint32_t now);
+    void end_face_track(uint32_t now);
+    void step_gaze(Modifiable& sc, uint32_t now);
+    void drop_gaze(Modifiable& sc);
+    uitk::Vector2i move_eyes(Modifiable& sc, int dx, int dy);
+
     void restore_backlight();
     int sleep_backlight() const;
     void update_backlight(uint32_t now);
@@ -261,6 +274,23 @@ private:
     uint32_t _buddy_temp_until  = 0;
     std::vector<HeadKey> _head_keys;
     int _head_base_pitch = 0;  // where the head was when the current run of keys began
+
+    // Face tracking
+    uint32_t _face_seq         = 0;      // last detection handled
+    bool _face_tracking        = false;  // a face was seen lately: glances and head behaviours wait
+    uint32_t _face_seen_at     = 0;
+    uint32_t _next_move_poll   = 0;
+    uint32_t _head_still_since = 0;      // 0 while the servos move
+    bool _face_check_pending   = false;  // ask for a detection once the head has settled
+    uint32_t _face_head_log_at = 0;
+    bool _face_turned          = false;  // the head turned for a face; the next still frame checks the direction
+    float _face_turn_ex        = 0;      // the face's angles (degrees) that turn was for
+    float _face_turn_ey        = 0;
+    int _face_wrong_way           = 0;  // turns in a row that left the face further off or out of view
+    uint32_t _face_head_off_until = 0;  // head tracking paused (wrong way) until then, 0 = not paused
+    int _gaze_x = 0, _gaze_y = 0;        // eye offset applied, avatar position units
+    int _gaze_tx = 0, _gaze_ty = 0;      // where the eyes are going
+    uint32_t _gaze_step_at = 0;
 
     // Claude Code session LEDs (slot i = LEDs 1+i and 7+i)
     static constexpr uint32_t kNoColor = UINT32_MAX;
