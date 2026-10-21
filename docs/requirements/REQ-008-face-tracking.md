@@ -77,8 +77,10 @@ The idle director owns it, so it never fights the other idle behaviours for the 
 - The head never steps against the error: standing outside the range (e.g. still at the sleep pitch after being
   picked up), a step that the range would turn around is skipped.
 - **Wrong-way guard**: the first still frame after a turn checks that the face got closer to the middle. Two turns in
-  a row that leave it more than 3 degrees further off, or out of view, pause head tracking for 30 minutes with a
-  warning in the log (a camera or servo mounted the other way round would otherwise chase the face out of view).
+  a row, within a minute, that leave it more than 3 degrees further off on the same side pause head tracking for
+  5 minutes with a warning in the log (a camera or servo mounted the other way round would otherwise chase the face
+  out of view). A face gone right after a turn does not count: on the first morning test (2026-10-22) two such
+  frames (people move, detection misses one now and then) paused head tracking for 30 minutes.
 - Sightings older than 1.5 s (from before a conversation or a doze) are skipped.
 - While a face is seen, idle glances wait 6 s and head behaviours 20 s after each sighting. No face for 4 s: the eyes
   go back; for 10 s: tracking ends and the idle behaviours resume.

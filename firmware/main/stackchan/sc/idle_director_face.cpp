@@ -32,7 +32,8 @@ static constexpr uint32_t kGreetAfterMs = 2 * 60 * 1000;
 static constexpr uint32_t kHeadLogMs    = 3000;
 static constexpr float kWrongWayDeg     = 3.0f;  // a turn that leaves the face this much further off went wrong
 static constexpr int kWrongWayStrikes   = 2;
-static constexpr uint32_t kHeadOffMs    = 30 * 60 * 1000;  // head tracking pause after wrong-way turns
+static constexpr uint32_t kStrikeGapMs  = 60 * 1000;      // wrong-way turns count as "in a row" within this
+static constexpr uint32_t kHeadOffMs    = 5 * 60 * 1000;  // head tracking pause after wrong-way turns
 static constexpr uint32_t kMaxAgeMs     = 1500;  // older sightings (from before a conversation or a doze) are skipped
 
 static constexpr float kDeadbandDeg = 5.0f;  // closer to the middle than this: the head stays
@@ -101,8 +102,9 @@ void IdleDirectorModifier::update_face_track(Modifiable& sc, uint32_t now)
         } else if (s.found) {
             on_face_sighting(sc, s.cx, s.cy, s.at, now);
         } else if (_face_turned && frame_still(s.at)) {
-            _face_turned = false;  // the face left the view right after a turn: maybe the turn went the wrong way
-            note_turn_result(true, now);
+            // No face right after a turn says nothing about its direction (people move, detection misses one now
+            // and then; counting it paused head tracking on the first morning test, 2026-10-22).
+            _face_turned = false;
         }
     }
 
@@ -160,7 +162,7 @@ void IdleDirectorModifier::on_face_sighting(Modifiable& sc, float cx, float cy, 
                              std::fabs(ex) > std::fabs(_face_turn_ex) + kWrongWayDeg;
         const bool wrong_y = std::fabs(_face_turn_ey) >= kDeadbandDeg && ey * _face_turn_ey > 0 &&
                              std::fabs(ey) > std::fabs(_face_turn_ey) + kWrongWayDeg;
-        note_turn_result(wrong_x || wrong_y, now);
+        note_turn_result(wrong_x || wrong_y, ex, ey, now);
     }
     const bool head_off = _face_head_off_until && static_cast<int32_t>(now - _face_head_off_until) < 0;
     if (head_off || !face_head_allowed(sc) || (std::fabs(ex) < kDeadbandDeg && std::fabs(ey) < kDeadbandDeg)) {
@@ -198,18 +200,26 @@ bool IdleDirectorModifier::frame_still(uint32_t taken) const
     return _head_still_since && static_cast<int32_t>(taken - (_head_still_since + kSettleMs)) >= 0;
 }
 
-// Wrong-way turns in a row (the face further off, or gone, on the first still frame after a turn) pause head
-// tracking; a turn that brought the face closer clears the count.
-void IdleDirectorModifier::note_turn_result(bool wrong, uint32_t now)
+// Wrong-way turns in a row (the face further off on the same side on the first still frame after a turn, within a
+// minute of each other) pause head tracking; a turn that brought the face closer clears the count.
+void IdleDirectorModifier::note_turn_result(bool wrong, float ex, float ey, uint32_t now)
 {
-    _face_wrong_way = wrong ? _face_wrong_way + 1 : 0;
+    if (!wrong) {
+        _face_wrong_way = 0;
+        return;
+    }
+    if (_face_wrong_way > 0 && now - _face_wrong_at > kStrikeGapMs) {
+        _face_wrong_way = 0;  // the last one was too long ago to tell a pattern
+    }
+    ++_face_wrong_way;
+    _face_wrong_at = now;
+    mclog::tagInfo(_tag, "turn for a face {:.1f} / {:.1f} degrees off left it at {:.1f} / {:.1f} ({} of {})",
+                   _face_turn_ex, _face_turn_ey, ex, ey, _face_wrong_way, kWrongWayStrikes);
     if (_face_wrong_way >= kWrongWayStrikes) {
         _face_wrong_way      = 0;
         _face_head_off_until = (now + kHeadOffMs) | 1;
-        mclog::tagWarn(_tag,
-                       "{} turns in a row left the face further off or out of view (last turn for {:.1f} / {:.1f} "
-                       "degrees): head tracking paused for {} min",
-                       kWrongWayStrikes, _face_turn_ex, _face_turn_ey, kHeadOffMs / 60000);
+        mclog::tagWarn(_tag, "{} turns in a row left the face further off: head tracking paused for {} min",
+                       kWrongWayStrikes, kHeadOffMs / 60000);
     }
 }
 
@@ -232,7 +242,7 @@ void IdleDirectorModifier::end_face_track(uint32_t now)
     }
     _face_tracking      = false;
     _face_check_pending = false;
-    _face_turned        = false;  // a face lost right after a turn was counted when that frame came
+    _face_turned        = false;
     _gaze_tx = _gaze_ty = 0;
 }
 

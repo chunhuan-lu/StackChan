@@ -144,7 +144,7 @@ private:
     void on_face_sighting(Modifiable& sc, float cx, float cy, uint32_t taken, uint32_t now);
     bool face_head_allowed(Modifiable& sc) const;
     bool frame_still(uint32_t taken) const;
-    void note_turn_result(bool wrong, uint32_t now);
+    void note_turn_result(bool wrong, float ex, float ey, uint32_t now);
     void end_face_track(uint32_t now);
     void step_gaze(Modifiable& sc, uint32_t now);
     void drop_gaze(Modifiable& sc);
@@ -286,7 +286,8 @@ private:
     bool _face_turned          = false;  // the head turned for a face; the next still frame checks the direction
     float _face_turn_ex        = 0;      // the face's angles (degrees) that turn was for
     float _face_turn_ey        = 0;
-    int _face_wrong_way           = 0;  // turns in a row that left the face further off or out of view
+    int _face_wrong_way           = 0;  // turns in a row that left the face further off
+    uint32_t _face_wrong_at       = 0;  // the last of them
     uint32_t _face_head_off_until = 0;  // head tracking paused (wrong way) until then, 0 = not paused
     int _gaze_x = 0, _gaze_y = 0;        // eye offset applied, avatar position units
     int _gaze_tx = 0, _gaze_ty = 0;      // where the eyes are going
