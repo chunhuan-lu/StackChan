@@ -52,6 +52,9 @@
 #else
 #define SC_SUIT_DEFAULT 0
 #endif
+#ifndef CONFIG_SC_CLAUDE_SUIT_COLOR
+#define CONFIG_SC_CLAUDE_SUIT_COLOR 1
+#endif
 #ifndef CONFIG_SC_CLAUDE_SUIT_OFF_MINUTES
 #define CONFIG_SC_CLAUDE_SUIT_OFF_MINUTES 2
 #endif
@@ -68,6 +71,7 @@ namespace stackchan::sc {
 
 static constexpr const char* kNvsNamespace = "sc_cfg";
 static const char* const kActivityLabels[] = {"Off", "Low", "Medium", "High"};
+static const char* const kSuitColorLabels[] = {"Clay", "Orange", "Bright"};
 
 // Ranges here and in Kconfig.projbuild are the same.
 static const SettingInfo kSettings[] = {
@@ -103,6 +107,9 @@ static const SettingInfo kSettings[] = {
      "Show Claude Code sessions on the lights and the face."},
     {SettingId::ClaudeSuit, "claude_suit", "Claude Code", "Pixel buddy suit", "", SettingType::Bool, SC_SUIT_DEFAULT,
      0, 1, 1, nullptr, "While Claude Code works the robot wears an orange pixel buddy costume, put on and taken off with a funny transition."},
+    {SettingId::SuitColor, "suit_color", "Claude Code", "Suit colour", "", SettingType::Choice,
+     CONFIG_SC_CLAUDE_SUIT_COLOR, 0, 2, 1, kSuitColorLabels,
+     "Colour of the costume: 0 clay (the Claude brand colour, muted on this screen), 1 orange, 2 bright orange."},
     {SettingId::SuitOffMinutes, "suit_off_min", "Claude Code", "Suit off after", " min", SettingType::Int,
      CONFIG_SC_CLAUDE_SUIT_OFF_MINUTES, 1, 30, 1, nullptr,
      "Minutes without Claude Code activity before the robot takes the costume off."},
@@ -128,6 +135,7 @@ static bool compiled_in(SettingId id)
 #endif
         case SettingId::Claude:
         case SettingId::ClaudeSuit:
+        case SettingId::SuitColor:
         case SettingId::SuitOffMinutes:
         case SettingId::SuitHead:
         case SettingId::SuitHeadSpeed:

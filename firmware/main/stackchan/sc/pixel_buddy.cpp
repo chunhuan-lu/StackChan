@@ -10,9 +10,10 @@
 
 namespace stackchan::sc {
 
-// Colours
-static constexpr uint32_t kClay    = 0xD97757;
-static constexpr uint32_t kOutline = 0x8A3B22;  // hands and arm, so they stand out against the body
+// Colours. Suit and outline (hands and arm, so they stand out against the body) per scheme: the brand clay
+// looks greyish on the CoreS3 LCD, so plain and bright oranges are offered too.
+static constexpr uint32_t kSchemes[][2] = {{0xD97757, 0x8A3B22}, {0xF2711C, 0x8C3A06}, {0xFF5F00, 0x993300}};
+static constexpr int kSchemeCount       = sizeof(kSchemes) / sizeof(kSchemes[0]);
 static constexpr uint32_t kInk     = 0x141413;
 static constexpr uint32_t kIvory   = 0xFAF9F5;
 static constexpr uint32_t kBlue    = 0x7FC8FF;
@@ -240,12 +241,15 @@ void PixelBuddy::build(avatar::Avatar& av, lv_obj_t* panel)
         outline(_sc_o, kWhite, 4);
 
         // The suit
-        for (auto& b : _legs) box(b, _layer, kClay, 0);
-        for (auto& b : _claw) {
-            box(b, _layer, kClay, 0);
-            outline(b, kOutline, 2);
+        if (_body == 0) {
+            setColorScheme(1);
         }
-        for (auto& b : _half) box(b, _layer, kClay, 0);
+        for (auto& b : _legs) box(b, _layer, _body, 0);
+        for (auto& b : _claw) {
+            box(b, _layer, _body, 0);
+            outline(b, _outline, 2);
+        }
+        for (auto& b : _half) box(b, _layer, _body, 0);
         for (int i = 0; i < 2; ++i) {
             box(_hole[i], _layer, kBlack, 0);  // children are clipped to it: StackChan's eye peeks through
             box(_peek[i], _hole[i].obj, kWhite, LV_RADIUS_CIRCLE);
@@ -257,8 +261,8 @@ void PixelBuddy::build(avatar::Avatar& av, lv_obj_t* panel)
         }
         box(_gap, _layer, kBlack, 0);
         for (Box* b : {&_upper_arm, &_forearm, &_hand}) {
-            box(*b, _layer, kClay, 0);
-            outline(*b, kOutline, 2);
+            box(*b, _layer, _body, 0);
+            outline(*b, _outline, 2);
         }
         box(_pull, _layer, kIvory, 0);
         for (auto& b : _parts) box(b, _layer, kIvory, 0);
@@ -345,6 +349,30 @@ void PixelBuddy::hide(avatar::Avatar& av)
     av.rightEye().setVisible(true);
     av.mouth().setVisible(true);
     av.setEmotion(av.getEmotion());  // re-sync the eyelids
+}
+
+void PixelBuddy::setColorScheme(int scheme)
+{
+    scheme                 = std::clamp(scheme, 0, kSchemeCount - 1);
+    const uint32_t body    = kSchemes[scheme][0];
+    const uint32_t outline = kSchemes[scheme][1];
+    if (body == _body && outline == _outline) {
+        return;
+    }
+    _body    = body;
+    _outline = outline;
+    if (!_layer) {
+        return;  // build() uses the new colours
+    }
+    for (Box* b : {&_legs[0], &_legs[1], &_legs[2], &_legs[3], &_half[0], &_half[1]}) {
+        paint(*b, body);
+    }
+    for (Box* b : {&_claw[0], &_claw[1], &_upper_arm, &_forearm, &_hand}) {
+        paint(*b, body);
+        if (b->obj) {
+            lv_obj_set_style_border_color(b->obj, lv_color_hex(outline), 0);
+        }
+    }
 }
 
 void PixelBuddy::setPose(BuddyPose pose, uint32_t now)

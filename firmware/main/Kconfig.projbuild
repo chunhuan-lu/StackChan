@@ -1186,6 +1186,15 @@ menu "StackChan fork options"
             buddy costume with a funny transition, and takes it off a while after the last activity
             (REQ-007). Default of the "claude_suit" setting.
 
+    config SC_CLAUDE_SUIT_COLOR
+        int "Suit colour (0 clay, 1 orange, 2 bright orange)"
+        range 0 2
+        default 1
+        depends on SC_CLAUDE_SUIT
+        help
+            Clay is the Claude brand colour; it looks greyish on the CoreS3 LCD. Default of the
+            "suit_color" setting.
+
     config SC_CLAUDE_SUIT_OFF_MINUTES
         int "Take the suit off after (minutes without Claude Code activity)"
         range 1 30

@@ -12,7 +12,9 @@ Claude Code 干活时，机器人要变成「Claude 机器人」的样子，从�
 - 干活时满头大汗；
 - 进场：StackChan 被套上一套 Claude 皮套；
 - 出场：小伙伴用自己的手拉开拉链，手连着长手臂（不要像一个方块飞出去），手和手臂带轮廓，跟身体区分开；
-- 转场时舵机配合动头，可以在设置面板里开关和调速。
+- 转场时舵机配合动头，可以在设置面板里开关和调速；
+- 要正的橙色：品牌陶土色（#D97757）在 CoreS3 的 LCD 上发灰，所以颜色做成设置，有陶土、橙色（#F2711C，默认）和亮橙（#FF5F00）
+  三种，在真机上对比。
 
 设计画布（私有）：StackChan Claude 表情，画板「C 像素小伙伴」「穿上 Claude 皮套」「脱下 Claude 皮套」。
 
@@ -52,6 +54,7 @@ Claude Code 干活时，机器人要变成「Claude 机器人」的样子，从�
 | 键 | 面板标签 | 范围 | 默认值（Kconfig） |
 |---|---|---|---|
 | `claude_suit` | Pixel buddy suit | 开 / 关 | `SC_CLAUDE_SUIT` y |
+| `suit_color` | Suit colour | Clay / Orange / Bright | `SC_CLAUDE_SUIT_COLOR` 1（橙色） |
 | `suit_off_min` | Suit off after | 1–30 分钟 | `SC_CLAUDE_SUIT_OFF_MINUTES` 2 |
 | `suit_head` | Head moves along | 开 / 关 | `SC_CLAUDE_SUIT_HEAD` y |
 | `suit_head_spd` | Head speed | 100–1000（50） | `SC_CLAUDE_SUIT_HEAD_SPEED` 600 |

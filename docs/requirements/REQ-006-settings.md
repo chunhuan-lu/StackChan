@@ -49,6 +49,7 @@ Only settings whose feature is compiled in are listed.
 | `tap_wake` | Tap wakes me up | on / off | on | `SC_IDLE_DIRECTOR` + `SC_TOUCH_FIXES` |
 | `claude` | Show Claude Code | on / off | on | `SC_IDLE_DIRECTOR` + `SC_USB_LINK` |
 | `claude_suit` | Pixel buddy suit | on / off | `SC_CLAUDE_SUIT` y | `SC_IDLE_DIRECTOR` + `SC_USB_LINK` (REQ-007) |
+| `suit_color` | Suit colour | Clay / Orange / Bright | `SC_CLAUDE_SUIT_COLOR` 1 | same |
 | `suit_off_min` | Suit off after | 1–30 min | `SC_CLAUDE_SUIT_OFF_MINUTES` 2 | same |
 | `suit_head` | Head moves along | on / off | `SC_CLAUDE_SUIT_HEAD` y | same |
 | `suit_head_spd` | Head speed | 100–1000 (50) | `SC_CLAUDE_SUIT_HEAD_SPEED` 600 | same |

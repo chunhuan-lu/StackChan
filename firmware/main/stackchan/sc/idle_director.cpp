@@ -1576,6 +1576,7 @@ void IdleDirectorModifier::update_suit(Modifiable& sc, uint32_t now)
             }
             _face.clear(av);
             _temp_face = FaceStyle::None;
+            _buddy.setColorScheme(setting(SettingId::SuitColor));
             if (now - _created < 3000) {
                 _buddy.show(av, avatar_panel(sc), now);  // back after a conversation: no transition
                 mclog::tagInfo(_tag, "claude suit: on");
@@ -1590,6 +1591,7 @@ void IdleDirectorModifier::update_suit(Modifiable& sc, uint32_t now)
     }
 
     if (_buddy.visible()) {
+        _buddy.setColorScheme(setting(SettingId::SuitColor));
         _buddy.setPose(buddy_pose(now), now);
         _buddy.update(av, now);
         on_buddy_cue(_buddy.takeCue(), now);
