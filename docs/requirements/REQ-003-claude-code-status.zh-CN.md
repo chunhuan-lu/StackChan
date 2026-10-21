@@ -153,7 +153,7 @@ LED 布局：最多 5 个会话，每个会话一颗灯，左边（1–5）和�
 
 固件（`feat/claude-link`）：
 - `main/hal/sc/usb_link.*`：任务 "sc_usb" 在核心 1、优先级 2、6 KB PSRAM 栈；驱动接收缓冲 1 KB；回复用一次 `write()`
-  写到 `/dev/secondary`；在 `Hal::init()` 末尾启动，所有模式下都运行（状态只在 AI Agent 待机时显示）。`SC_USB_LINK`（默认开启）。
+  写到 `/dev/secondary`；在 `Hal::init()` 末尾启动，所有模式下都运行（状态只在 AI Agent 待机时显示）。`SC_USB_LINK`（REQ-006 起 Kconfig 默认关闭，在 `sdkconfig.defaults.sc` 里开启）。
 - `main/stackchan/sc/claude_status.*`：单例，保存 5 个槽位、事件队列（4 条、最长保留 30 秒）和 30 秒过期规则。
 - 待机行为：有会话时由它们占用 LED 1–5 / 7–11（槽位 i 对应 LED 1+i 和 7+i）；短暂的反应效果（被拿起、撸毛）仍然优先。
   颜色：idle 暗白、work 蓝色呼吸、wait 琥珀色闪烁、done 绿色（10 分钟后变暗）、err 红色；工具失败时该槽位红色闪 3 秒。

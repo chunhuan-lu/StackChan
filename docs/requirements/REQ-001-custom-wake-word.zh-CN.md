@@ -27,7 +27,7 @@
 |---|---|
 | 分区表 | 新增 `firmware/partitions_sc.csv`：资源分区从 4096 KB 扩到 6080 KB，coredump 挪到 `0xFF0000`。NVS、otadata、phy_init、ota_0、ota_1 都不变。 |
 | 配置 | 新增 `firmware/sdkconfig.defaults.sc`，在 `sdkconfig.defaults` 之后加载：指定分区表文件、自定义唤醒词、MultiNet7、关闭 WakeNet、`SC_DISABLE_AUTO_OTA`。 |
-| Kconfig | `main/Kconfig.projbuild`：新增菜单 "StackChan fork options"，包含 `SC_DISABLE_AUTO_OTA`（默认开启）。 |
+| Kconfig | `main/Kconfig.projbuild`：新增菜单 "StackChan fork options"，包含 `SC_DISABLE_AUTO_OTA`（REQ-006 起 Kconfig 默认关闭，在 `sdkconfig.defaults.sc` 里开启）。 |
 | 小智 | `patches/xiaozhi-esp32-fork.patch`：开启 `SC_DISABLE_AUTO_OTA` 时，`CheckNewVersion()` 发现新版本只记日志、不安装；资源打包脚本改为按 UTF-8 读取 `sdkconfig`（原来按 Windows 代码页读，中文显示文本会变成乱码）。 |
 | 工具 | `fetch_repos.py`：一个仓库可以打多个补丁；重复运行不会出错（在 `.git` 里记录已打的补丁组）；补丁打不上时报错，不再静默跳过。`tools/xiaozhi_fork_patch.py`：从小智的工作目录重新生成 fork 补丁。 |
 

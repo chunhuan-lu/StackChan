@@ -29,7 +29,7 @@ MultiNet7 (`CONFIG_SR_MN_CN_MULTINET7_QUANT`) plus a larger assets partition. Re
 |---|---|
 | Partition table | New `firmware/partitions_sc.csv`: assets 4096 KB → 6080 KB, coredump moved to `0xFF0000`. NVS, otadata, phy_init, ota_0 and ota_1 unchanged. |
 | Config | New `firmware/sdkconfig.defaults.sc`, loaded after `sdkconfig.defaults`: partition file, custom wake word, MultiNet7, WakeNet off, `SC_DISABLE_AUTO_OTA`. |
-| Kconfig | `main/Kconfig.projbuild`: menu "StackChan fork options" with `SC_DISABLE_AUTO_OTA` (default y). |
+| Kconfig | `main/Kconfig.projbuild`: menu "StackChan fork options" with `SC_DISABLE_AUTO_OTA` (Kconfig default n since REQ-006; on in `sdkconfig.defaults.sc`). |
 | xiaozhi | `patches/xiaozhi-esp32-fork.patch`: `CheckNewVersion()` only logs a newer version when `SC_DISABLE_AUTO_OTA` is set; the assets build script reads `sdkconfig` as UTF-8 (the Chinese display text was decoded with the Windows code page). |
 | Tooling | `fetch_repos.py`: several patches per repository, idempotent re-runs (patch-stack marker in `.git`), errors instead of silent skips. `tools/xiaozhi_fork_patch.py` regenerates the fork patch from the xiaozhi working tree. |
 

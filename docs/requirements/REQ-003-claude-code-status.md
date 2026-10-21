@@ -164,7 +164,7 @@ LED layout: up to 5 sessions, one LED per session, mirrored left (1–5) and rig
 Firmware (`feat/claude-link`):
 - `main/hal/sc/usb_link.*`: task "sc_usb" on core 1, priority 2, 6 KB PSRAM stack; driver RX ring 1 KB; replies with one
   `write()` to `/dev/secondary`; started at the end of `Hal::init()` in every mode (the state is only shown in AI Agent
-  standby). `SC_USB_LINK` (default y).
+  standby). `SC_USB_LINK` (Kconfig default n since REQ-006; on in `sdkconfig.defaults.sc`).
 - `main/stackchan/sc/claude_status.*`: singleton with the 5 slots, an event queue (4 entries, 30 s max age) and the
   30 s staleness rule.
 - Idle director: while sessions exist they own LEDs 1–5 / 7–11 (slot i = LEDs 1+i and 7+i); short reaction effects

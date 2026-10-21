@@ -35,6 +35,9 @@
 
 - 新功能放在**新文件**里；改官方文件时只加小的、有明确标记的挂接点。
 - fork 新增的功能用 Kconfig 开关控制，符号统一以 **`SC_`** 开头（即 `CONFIG_SC_...`），每个功能都能单独关掉。
+- Kconfig 默认值保持**官方行为**（功能开关默认 `n`）；本 fork 在 `firmware/sdkconfig.defaults.sc` 里打开自己的功能。
+  可调的数值在 Kconfig 里给默认值和范围；需要让用户在设备上修改的，再加到 `main/stackchan/sc/sc_settings.cpp` 的设置表里
+  （范围保持一致，见 REQ-006）。
 - 改配置能解决的，优先改 `sdkconfig.defaults`，不改代码。
 
 ## 4. 修改 xiaozhi-esp32

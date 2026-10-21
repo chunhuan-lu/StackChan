@@ -35,6 +35,9 @@ Scope: this fork ([chunhuan-lu/StackChan](https://github.com/chunhuan-lu/StackCh
 
 - Put new features in **new files**; touch upstream files only for small, clearly marked hooks.
 - Gate fork features behind Kconfig options whose symbols start with **`SC_`** (`CONFIG_SC_...`), so each feature can be switched off.
+- Kconfig defaults keep the **upstream behaviour** (feature options default `n`); this fork turns its features on in
+  `firmware/sdkconfig.defaults.sc`. Tunable values get a Kconfig default and range; when users should change them on
+  the device, add them to the settings table in `main/stackchan/sc/sc_settings.cpp` (same range, REQ-006).
 - Prefer `sdkconfig.defaults` changes over code changes when a setting is enough.
 
 ## 4. Changes to xiaozhi-esp32
