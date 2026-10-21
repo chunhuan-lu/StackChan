@@ -145,8 +145,9 @@ frame must be announced on the screen first.
 
 - Watching the behaviour with a real face: direction of the eyes, the head step size and the greeting.
 - During conversations the camera is off (the AFE and the cloud audio would compete with detection the same way).
-- The model and esp-dl take about 400 KB of a nearly full app partition; making the feature a fork default needs a
-  partition decision (with the maintainer).
+- The model and esp-dl take about 400 KB of a nearly full app partition. The maintainer decided on 2026-10-22 to
+  keep the feature off by default for now (enabled in the local sdkconfig only); a fork default would need a
+  partition decision first.
 - esp-dl issue #337 (same hardware): rare crashes in TIE728 depthwise kernels; not seen here so far.
 
 ## Test on the device
