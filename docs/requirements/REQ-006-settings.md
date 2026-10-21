@@ -48,6 +48,10 @@ Only settings whose feature is compiled in are listed.
 | `faces` | Expressive faces | on / off | `SC_IDLE_FACES` y | `SC_IDLE_DIRECTOR` |
 | `tap_wake` | Tap wakes me up | on / off | on | `SC_IDLE_DIRECTOR` + `SC_TOUCH_FIXES` |
 | `claude` | Show Claude Code | on / off | on | `SC_IDLE_DIRECTOR` + `SC_USB_LINK` |
+| `claude_suit` | Pixel buddy suit | on / off | `SC_CLAUDE_SUIT` y | `SC_IDLE_DIRECTOR` + `SC_USB_LINK` (REQ-007) |
+| `suit_off_min` | Suit off after | 1–30 min | `SC_CLAUDE_SUIT_OFF_MINUTES` 2 | same |
+| `suit_head` | Head moves along | on / off | `SC_CLAUDE_SUIT_HEAD` y | same |
+| `suit_head_spd` | Head speed | 100–1000 (50) | `SC_CLAUDE_SUIT_HEAD_SPEED` 600 | same |
 | `usb_awake` | No standby on USB | on / off | on | `SC_EXT_POWER_NO_STANDBY` |
 
 Pairs stay consistent: "light above" is kept above "dark below", and "special face, to" is never below "from" (also

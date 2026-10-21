@@ -1177,6 +1177,35 @@ menu "StackChan fork options"
             the Claude Code sessions on the mood LEDs and reacts to their events. Inactive until the
             agent connects; about 1 KB of internal RAM (buffers and task stack are in PSRAM).
 
+    config SC_CLAUDE_SUIT
+        bool "Pixel buddy suit while Claude Code works"
+        default y
+        depends on SC_USB_LINK && SC_IDLE_DIRECTOR
+        help
+            While a Claude Code session works or waits for the user, the robot puts on an orange pixel
+            buddy costume with a funny transition, and takes it off a while after the last activity
+            (REQ-007). Default of the "claude_suit" setting.
+
+    config SC_CLAUDE_SUIT_OFF_MINUTES
+        int "Take the suit off after (minutes without Claude Code activity)"
+        range 1 30
+        default 2
+        depends on SC_CLAUDE_SUIT
+
+    config SC_CLAUDE_SUIT_HEAD
+        bool "Head moves along with the suit transitions"
+        default y
+        depends on SC_CLAUDE_SUIT
+        help
+            Nod when the suit lands, lift the head for the "ta-da", lean back when the steam puffs out and
+            shake the sweat off. Default of the "suit_head" setting.
+
+    config SC_CLAUDE_SUIT_HEAD_SPEED
+        int "Servo speed of those head movements (100-1000)"
+        range 100 1000
+        default 600
+        depends on SC_CLAUDE_SUIT_HEAD
+
     endmenu # Claude Code link
 
     menu "Settings"

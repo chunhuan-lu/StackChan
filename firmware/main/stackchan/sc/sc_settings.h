@@ -38,6 +38,10 @@ enum class SettingId : uint8_t {
     Faces,
     TapWake,
     Claude,
+    ClaudeSuit,
+    SuitOffMinutes,
+    SuitHead,
+    SuitHeadSpeed,
     UsbAwake,
     Count,
 };

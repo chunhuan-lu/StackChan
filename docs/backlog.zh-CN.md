@@ -21,6 +21,7 @@
 | B-005 | 不要在睡眠时持有 LVGL 锁 | todo | 小智忙碌时，`_stackchan_update_task` 会拿着锁执行 `vTaskDelay(100)`（`hal.cpp`）。 |
 | B-006 | 恢复热点配网 | todo | 1.6 只允许通过 App（蓝牙）配网，而自编译固件过不了 App 的握手。目前的备用办法：用 nRF Connect 通过蓝牙发送 `setWifi`。 |
 | B-007 | 检查音频任务调度 | todo | 只在说话卡顿复发时处理：`opus_codec`（优先级 2）低于 LVGL 和 stackchan 任务（优先级 3）。 |
+| B-023 | Claude Code 像素小伙伴皮套 | doing | [REQ-007](requirements/REQ-007-claude-suit.zh-CN.md)，在 `feat/claude-suit` 分支：Claude Code 干活时机器人穿上橙色像素小伙伴皮套（9 种姿态，干活时冒汗），穿上时皮套掉下来、在里面扭一扭，脱下时用带轮廓的长手臂自己拉开拉链；头跟着点头、后仰、摇头（设置 `claude_suit`、`suit_off_min`、`suit_head`、`suit_head_spd`）。已烧录，转场待真机观察。 |
 | B-022 | USB 完全控制：烧录、重启、启动 AI Agent | doing | `tools/sc-agent/sc-flash.ps1`：通过 USB-Serial/JTAG 由 esptool 进入下载模式、烧录、等待新的 boot id（卡在 ROM 下载模式时看门狗复位），USB 通道命令 `agent`（协议 v1.2）让主菜单打开 AI Agent。2026-10-21 真机验证通过（复位后 15 秒 AI Agent 就绪）。见 [REQ-003](requirements/REQ-003-claude-code-status.zh-CN.md)。 |
 | B-021 | 设置面板与语音设置 | doing | [REQ-006](requirements/REQ-006-settings.zh-CN.md)，在 `feat/settings` 分支：Home 按钮旁的齿轮打开设置面板，共 15 项（活跃程度、作息、光照阈值、睡眠屏幕、灯光亮度、特殊表情间隔，以及表情 / 点击唤醒 / Claude / 插 USB 不待机 开关），保存在 NVS `sc_cfg`，立即生效；MCP 工具 `self.robot.get_settings` / `set_setting`。Kconfig 默认值改为官方行为，本 fork 的选择放在 `sdkconfig.defaults.sc`。等待真机验证。 |
 | B-020 | 更生动的表情 | doing | [REQ-005](requirements/REQ-005-faces.zh-CN.md)：FaceArt 画出 16 个矢量表情（温和微笑作为基础脸，每 4–10 分钟偶尔换一个特殊表情，Claude Code 相关表情由会话状态和事件驱动）。等待真机验证。 |

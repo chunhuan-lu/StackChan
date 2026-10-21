@@ -8,6 +8,7 @@
 #include "claude_status.h"
 #include "face_animation.h"
 #include "face_art.h"
+#include "pixel_buddy.h"
 #include <hal/hal.h>
 #include <array>
 #include <atomic>
@@ -128,6 +129,14 @@ private:
     void show_temp_face(Modifiable& sc, FaceStyle style, uint32_t durationMs, uint32_t now);
     FaceStyle claude_face(uint32_t now);
     FaceStyle pick_idle_face() const;
+    void claude_reaction(Modifiable& sc, FaceStyle face, BuddyPose pose, uint32_t durationMs, uint32_t now);
+
+    // Pixel buddy suit (REQ-007): worn while Claude Code works
+    void update_suit(Modifiable& sc, uint32_t now);
+    bool suit_allowed() const;
+    BuddyPose buddy_pose(uint32_t now);
+    void on_buddy_cue(BuddyCue cue, uint32_t now);
+    void run_head_keys(Modifiable& sc, uint32_t now);
     void restore_backlight();
     int sleep_backlight() const;
     void update_backlight(uint32_t now);
@@ -238,6 +247,19 @@ private:
     FaceStyle _claude_face      = FaceStyle::None;  // cached, refreshed every kClaudeFaceMs
     uint32_t _next_claude_face  = 0;
     bool _claude_full           = false;  // a session's context is above 80 %
+
+    // Pixel buddy suit
+    struct HeadKey {
+        uint32_t at;
+        int yaw;  // INT32_MIN: pitch only
+        int pitch;
+        int speed;
+    };
+    PixelBuddy _buddy;
+    uint32_t _claude_active_at  = 0;  // last time a session worked or waited
+    BuddyPose _buddy_temp       = BuddyPose::Idle;
+    uint32_t _buddy_temp_until  = 0;
+    std::vector<HeadKey> _head_keys;
 
     // Claude Code session LEDs (slot i = LEDs 1+i and 7+i)
     static constexpr uint32_t kNoColor = UINT32_MAX;

@@ -47,6 +47,22 @@
 #else
 #define SC_FACES_DEFAULT 0
 #endif
+#ifdef CONFIG_SC_CLAUDE_SUIT
+#define SC_SUIT_DEFAULT 1
+#else
+#define SC_SUIT_DEFAULT 0
+#endif
+#ifndef CONFIG_SC_CLAUDE_SUIT_OFF_MINUTES
+#define CONFIG_SC_CLAUDE_SUIT_OFF_MINUTES 2
+#endif
+#ifdef CONFIG_SC_CLAUDE_SUIT_HEAD
+#define SC_SUIT_HEAD_DEFAULT 1
+#else
+#define SC_SUIT_HEAD_DEFAULT 0
+#endif
+#ifndef CONFIG_SC_CLAUDE_SUIT_HEAD_SPEED
+#define CONFIG_SC_CLAUDE_SUIT_HEAD_SPEED 600
+#endif
 
 namespace stackchan::sc {
 
@@ -85,6 +101,16 @@ static const SettingInfo kSettings[] = {
      "A tap on the sleeping face wakes the robot instead of starting a conversation."},
     {SettingId::Claude, "claude", "Claude Code", "Show Claude Code", "", SettingType::Bool, 1, 0, 1, 1, nullptr,
      "Show Claude Code sessions on the lights and the face."},
+    {SettingId::ClaudeSuit, "claude_suit", "Claude Code", "Pixel buddy suit", "", SettingType::Bool, SC_SUIT_DEFAULT,
+     0, 1, 1, nullptr, "While Claude Code works the robot wears an orange pixel buddy costume, put on and taken off with a funny transition."},
+    {SettingId::SuitOffMinutes, "suit_off_min", "Claude Code", "Suit off after", " min", SettingType::Int,
+     CONFIG_SC_CLAUDE_SUIT_OFF_MINUTES, 1, 30, 1, nullptr,
+     "Minutes without Claude Code activity before the robot takes the costume off."},
+    {SettingId::SuitHead, "suit_head", "Claude Code", "Head moves along", "", SettingType::Bool,
+     SC_SUIT_HEAD_DEFAULT, 0, 1, 1, nullptr, "The head nods, leans back and shakes with the costume transitions."},
+    {SettingId::SuitHeadSpeed, "suit_head_spd", "Claude Code", "Head speed", "", SettingType::Int,
+     CONFIG_SC_CLAUDE_SUIT_HEAD_SPEED, 100, 1000, 50, nullptr,
+     "Servo speed of those head movements, 100 slow to 1000 fastest."},
     {SettingId::UsbAwake, "usb_awake", "Power", "No standby on USB", "", SettingType::Bool, 1, 0, 1, 1, nullptr,
      "Never power-save or power off while USB power is present."},
 };
@@ -101,6 +127,10 @@ static bool compiled_in(SettingId id)
             return false;
 #endif
         case SettingId::Claude:
+        case SettingId::ClaudeSuit:
+        case SettingId::SuitOffMinutes:
+        case SettingId::SuitHead:
+        case SettingId::SuitHeadSpeed:
 #if CONFIG_SC_IDLE_DIRECTOR && CONFIG_SC_USB_LINK
             return true;
 #else

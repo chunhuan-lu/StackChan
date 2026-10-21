@@ -180,6 +180,7 @@ IdleDirectorModifier::~IdleDirectorModifier()
 
     if (_sc && _sc->hasAvatar()) {
         auto& av = _sc->avatar();
+        _buddy.hide(av);
         _face.clear(av);  // conversations use the default features (the speaking mouth)
         if (_anim) {
             _anim->end(av);
@@ -325,6 +326,8 @@ void IdleDirectorModifier::_update(Modifiable& sc)
         _bl_target = sleep_backlight();  // follows the room light while asleep
     }
     update_backlight(now);
+    update_suit(sc, now);
+    run_head_keys(sc, now);
     update_face(sc, now);
 
     if (now >= _next_led) {
@@ -769,7 +772,7 @@ void IdleDirectorModifier::update_sleep_state(Modifiable& sc, uint32_t now)
             return;
         }
         const bool quiet = now - mood.lastInteractionMs > kSleepGraceMs && now - _awake_since > kSleepGraceMs &&
-                           !_touching && !_held && !_tilted && now >= _paused_until;
+                           !_touching && !_held && !_tilted && now >= _paused_until && !_buddy.visible();
         if (!quiet) {
             return;
         }
@@ -894,6 +897,10 @@ void IdleDirectorModifier::update_sleeping(Modifiable& sc, uint32_t now)
 
 void IdleDirectorModifier::update_awake(Modifiable& sc, uint32_t now)
 {
+    if (_buddy.visible()) {
+        _afterglow_at = 0;  // the buddy has its own faces
+        return;
+    }
     if (now < _paused_until || _touching) {
         return;
     }
@@ -1310,7 +1317,7 @@ void IdleDirectorModifier::on_claude_event(Modifiable& sc, const ClaudeEvent& ev
     };
     switch (event.ev) {
         case ClaudeEv::Needs:
-            show_temp_face(sc, FaceStyle::Needs, 8000, now);
+            claude_reaction(sc, FaceStyle::Needs, BuddyPose::Needs, 8000, now);
             show_bubble(sc, event.text, 8000, now);
             if (try_head_move(sc, now, INT32_MIN, kAwakePitch + 120, kSlowSpeed * 2, true)) {
                 _pending_move_at = now + 2500;  // look up at the user, then settle
@@ -1319,25 +1326,25 @@ void IdleDirectorModifier::on_claude_event(Modifiable& sc, const ClaudeEvent& ev
             }
             break;
         case ClaudeEv::Done:
-            show_temp_face(sc, FaceStyle::Done, 5000, now);
+            claude_reaction(sc, FaceStyle::Done, BuddyPose::Done, 5000, now);
             show_bubble(sc, event.text, 4000, now);
             nod();
             break;
         case ClaudeEv::Pass:
-            show_temp_face(sc, FaceStyle::Done, 4000, now);
+            claude_reaction(sc, FaceStyle::Done, BuddyPose::Done, 4000, now);
             show_bubble(sc, event.text, 4000, now);
             nod();
             break;
         case ClaudeEv::Fail:
-            show_temp_face(sc, FaceStyle::Fail, 4000, now);
+            claude_reaction(sc, FaceStyle::Fail, BuddyPose::Fail, 4000, now);
             show_bubble(sc, event.text, 4000, now);
             break;
         case ClaudeEv::Err:
-            show_temp_face(sc, FaceStyle::Err, 5000, now);
+            claude_reaction(sc, FaceStyle::Err, BuddyPose::Err, 5000, now);
             show_bubble(sc, event.text, 5000, now);
             break;
         case ClaudeEv::Compact:
-            show_temp_face(sc, FaceStyle::Compact, 4000, now);
+            claude_reaction(sc, FaceStyle::Compact, BuddyPose::Compact, 4000, now);
             show_bubble(sc, event.text, 4000, now);
             break;
     }
@@ -1465,6 +1472,13 @@ FaceStyle IdleDirectorModifier::pick_idle_face() const
 void IdleDirectorModifier::update_face(Modifiable& sc, uint32_t now)
 {
     auto& av = sc.avatar();
+    if (_buddy.visible()) {
+        if (_face.style() != FaceStyle::None) {
+            _face.clear(av);
+        }
+        _temp_face = FaceStyle::None;
+        return;
+    }
     // Faces are for the awake robot. Reactions, mouth animations and emotion overrides use the default
     // features meanwhile; eye-only idle animations (glances) run on top of a face that keeps the eyes.
     const bool anim_owns =
@@ -1510,6 +1524,142 @@ void IdleDirectorModifier::update_face(Modifiable& sc, uint32_t now)
         _face_since = now;
     }
     _face.update(av, now);
+}
+
+void IdleDirectorModifier::claude_reaction(Modifiable& sc, FaceStyle face, BuddyPose pose, uint32_t durationMs,
+                                           uint32_t now)
+{
+    if (_buddy.visible() && !_buddy.takingOff()) {
+        _buddy_temp       = pose;
+        _buddy_temp_until = now + durationMs;
+        return;
+    }
+    show_temp_face(sc, face, durationMs, now);
+}
+
+/* ---------------------------------------------------------------------------------------------- */
+/*                                  Pixel buddy suit (REQ-007)                                    */
+/* ---------------------------------------------------------------------------------------------- */
+
+bool IdleDirectorModifier::suit_allowed() const
+{
+    return ScSettings::get().enabled(SettingId::ClaudeSuit) && claude_on() && faces_on() &&
+           _phase == Phase::Awake && !_sleep_pose && !is_night();
+}
+
+// On while a session works or waits for the user, off a while (setting) after the last such moment, so
+// the robot does not change clothes between two prompts.
+void IdleDirectorModifier::update_suit(Modifiable& sc, uint32_t now)
+{
+    auto& av           = sc.avatar();
+    const bool allowed = suit_allowed();
+    bool active        = false;
+    ClaudeStatus::Sessions sessions;
+    if (allowed && GetClaudeStatus().snapshot(sessions, now)) {
+        for (const auto& s : sessions) {
+            active = active || (s.used && (s.st == ClaudeSt::Work || s.st == ClaudeSt::Wait));
+        }
+    }
+    if (active) {
+        _claude_active_at = now;
+    }
+    const bool wearing  = _buddy.visible() && !_buddy.takingOff();
+    const uint32_t keep = static_cast<uint32_t>(setting(SettingId::SuitOffMinutes)) * 60000u;
+    const bool want     = allowed && (active || (wearing && now - _claude_active_at < keep));
+
+    if (want && !wearing) {
+        const bool busy = _held || _tilted || _touching || now < _paused_until ||
+                          (_anim && _anim_purpose != AnimPurpose::Idle);
+        if (!busy) {
+            if (_anim) {
+                stop_anim(sc);
+            }
+            _face.clear(av);
+            _temp_face = FaceStyle::None;
+            if (now - _created < 3000) {
+                _buddy.show(av, avatar_panel(sc), now);  // back after a conversation: no transition
+                mclog::tagInfo(_tag, "claude suit: on");
+            } else {
+                _buddy.suitOn(av, avatar_panel(sc), now);
+                mclog::tagInfo(_tag, "claude suit: putting it on");
+            }
+        }
+    } else if (!want && wearing) {
+        mclog::tagInfo(_tag, "claude suit: taking it off ({})", allowed ? "no activity" : "not now");
+        _buddy.suitOff(now);
+    }
+
+    if (_buddy.visible()) {
+        _buddy.setPose(buddy_pose(now), now);
+        _buddy.update(av, now);
+        on_buddy_cue(_buddy.takeCue(), now);
+        if (!_buddy.visible()) {
+            mclog::tagInfo(_tag, "claude suit: off");
+        }
+    }
+}
+
+BuddyPose IdleDirectorModifier::buddy_pose(uint32_t now)
+{
+    if (now < _buddy_temp_until) {
+        return _buddy_temp;
+    }
+    switch (claude_face(now)) {  // the same priority as the faces: waiting > working > recent result
+        case FaceStyle::Needs:
+            return BuddyPose::Needs;
+        case FaceStyle::Think:
+        case FaceStyle::Curious:
+            return BuddyPose::Think;
+        case FaceStyle::Work:
+            return BuddyPose::Work;
+        case FaceStyle::Done:
+            return BuddyPose::Done;
+        case FaceStyle::Err:
+            return BuddyPose::Err;
+        default:
+            return _claude_full ? BuddyPose::Full : BuddyPose::Idle;
+    }
+}
+
+// Head movements that go with the transitions (settings "suit_head", "suit_head_spd").
+void IdleDirectorModifier::on_buddy_cue(BuddyCue cue, uint32_t now)
+{
+    if (cue == BuddyCue::None || !ScSettings::get().enabled(SettingId::SuitHead)) {
+        return;
+    }
+    const int fast = setting(SettingId::SuitHeadSpeed);
+    const int back = std::max(60, fast / 3);
+    switch (cue) {
+        case BuddyCue::Dip:  // the suit lands on the head
+            _head_keys = {{now, INT32_MIN, kAwakePitch - 70, fast}, {now + 350, INT32_MIN, kAwakePitch, back}};
+            break;
+        case BuddyCue::Lift:  // ta-da
+            _head_keys = {{now, INT32_MIN, kAwakePitch + 70, fast}, {now + 450, INT32_MIN, kAwakePitch, back}};
+            break;
+        case BuddyCue::Recoil:  // the steam puffs out
+            _head_keys = {{now, INT32_MIN, kAwakePitch + 100, fast}, {now + 450, INT32_MIN, kAwakePitch, back}};
+            break;
+        case BuddyCue::Shake:  // shaking the sweat off
+            _head_keys = {{now, 150, kAwakePitch, fast},
+                          {now + 160, -150, kAwakePitch, fast},
+                          {now + 320, 120, kAwakePitch, fast},
+                          {now + 480, -120, kAwakePitch, fast},
+                          {now + 640, 0, kAwakePitch, back}};
+            break;
+        default:
+            return;
+    }
+    static constexpr const char* kNames[] = {"none", "dip", "lift", "recoil", "shake"};
+    mclog::tagInfo(_tag, "suit head: {} (speed {})", kNames[static_cast<int>(cue)], fast);
+}
+
+void IdleDirectorModifier::run_head_keys(Modifiable& sc, uint32_t now)
+{
+    while (!_head_keys.empty() && now >= _head_keys.front().at) {
+        const HeadKey key = _head_keys.front();
+        _head_keys.erase(_head_keys.begin());
+        try_head_move(sc, now, key.yaw, key.pitch, key.speed, false);
+    }
 }
 
 bool IdleDirectorModifier::update_claude_led(uint32_t now)
