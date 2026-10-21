@@ -15,6 +15,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import secrets
 import signal
 import socket
@@ -31,6 +32,7 @@ from pathlib import Path
 from typing import Any, Callable, Protocol, TextIO
 from urllib.parse import parse_qs, urlsplit
 
+from results import CommandDetector
 from sc_link import encode_frame, split_line
 from sessions import QuietHours, SessionTable, quiet_hours_from_config
 
@@ -59,6 +61,7 @@ class Config:
     usb_pid: int = ROBOT_PID
     serial_port: str | None = None  # fixed COM port instead of the VID:PID search
     serial_number: str | None = None  # USB serial number of the robot: preferred, never skipped as silent
+    test_patterns: tuple[str, ...] = ()  # extra regexes for test commands (see results.py)
     quiet: QuietHours = field(default_factory=QuietHours)
     serial_log_days: int = 30  # 0 keeps serial logs forever
     release_timeout_s: float = 1800.0  # re-acquire a released port after this long; 0 = wait for /acquire
@@ -66,7 +69,7 @@ class Config:
 
 _CONFIG_KEYS = {
     "http_port", "usb_vid", "usb_pid", "serial_port", "serial_number", "quiet_days", "quiet_work", "quiet_night",
-    "serial_log_days", "release_timeout_s",
+    "serial_log_days", "release_timeout_s", "test_patterns",
 }
 
 
@@ -90,12 +93,21 @@ def load_config(path: Path) -> Config:
             raise ValueError(f"http_port {http_port} is not in 1..65535")
         port = data.get("serial_port")
         serial_number = data.get("serial_number")
+        patterns = data.get("test_patterns", [])
+        if not isinstance(patterns, list) or not all(isinstance(item, str) for item in patterns):
+            raise ValueError("test_patterns must be a list of regular expressions")
+        for pattern in patterns:
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise ValueError(f"test_patterns: {pattern!r}: {exc}") from exc
         return Config(
             http_port=http_port,
             usb_vid=_hex_or_int(data.get("usb_vid", ROBOT_VID)),
             usb_pid=_hex_or_int(data.get("usb_pid", ROBOT_PID)),
             serial_port=str(port) if port else None,
             serial_number=str(serial_number) if serial_number else None,
+            test_patterns=tuple(patterns),
             quiet=quiet_hours_from_config(data),
             serial_log_days=int(data.get("serial_log_days", 30)),
             release_timeout_s=float(data.get("release_timeout_s", 1800.0)),
@@ -311,6 +323,7 @@ class UsbLink:
         self._linked = False
         self._next_hello_at = 0.0
         self._state_dirty = True
+        self._dirty_since = 0.0  # when the state became dirty
         self._force_state = True
         self._last_state: dict[str, Any] | None = None
         self._confirmed_count: int | None = None  # sessions in the last state the robot acknowledged
@@ -339,7 +352,9 @@ class UsbLink:
 
     def notify_state(self) -> None:
         with self._cond:
-            self._state_dirty = True
+            if not self._state_dirty:
+                self._dirty_since = time.monotonic()
+                self._state_dirty = True
             self._cond.notify_all()
 
     def queue_event(self, event: dict[str, Any]) -> None:
@@ -557,9 +572,11 @@ class UsbLink:
                 while self._events and now - self._events[0][0] > EVENT_MAX_AGE:
                     log.debug("dropping stale event %s", self._events.popleft()[1].get("ev"))
                 state_wanted = self._force_state or self._state_dirty
-                # Events go out right away, after the pending state, so the state is not debounced then.
-                state_allowed = self._force_state or bool(self._events) or (
-                    now - self._last_state_at >= timing.state_interval)
+                # A change waits state_interval before the snapshot is taken (an act that flips back meanwhile sends
+                # nothing) and states keep state_interval apart (at most 5 per second). Events go out right away,
+                # after the pending state, so the state is not debounced then.
+                state_due = max(self._dirty_since, self._last_state_at) + timing.state_interval
+                state_allowed = self._force_state or bool(self._events) or now >= state_due
                 if state_wanted and state_allowed:
                     msg = self._take_state(now)
                     if msg is not None:
@@ -571,7 +588,7 @@ class UsbLink:
                     return {"t": "ping"}
                 deadline = self._last_tx_at + timing.ping_interval
                 if state_wanted:
-                    deadline = min(deadline, self._last_state_at + timing.state_interval)
+                    deadline = min(deadline, state_due)
                 self._cond.wait(max(0.01, deadline - now))
 
     def _take_state(self, now: float) -> dict[str, Any] | None:  # self._cond held
@@ -880,7 +897,7 @@ class Agent:
         self, config: Config, token: str, data_dir: Path, backend: SerialBackend, timing: LinkTiming = LinkTiming()
     ) -> None:
         self.config = config
-        self.table = SessionTable(config.quiet)
+        self.table = SessionTable(config.quiet, detector=CommandDetector(config.test_patterns))
         self.serial_log = SerialLog(data_dir / "logs", config.serial_log_days)
         self.link = UsbLink(
             backend,

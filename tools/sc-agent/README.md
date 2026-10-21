@@ -21,9 +21,12 @@ closed again after five tries and left alone for 60 s (see "Finding the robot"),
 | File | Purpose |
 |---|---|
 | `sc_agent.py` | The agent: HTTP endpoint for hooks, session table, USB link, serial log, port release for flashing |
-| `sessions.py` | Pure logic: hook events to robot sessions/events, slots, expiry, quiet hours |
+| `sessions.py` | Pure logic: hook events to robot sessions/events, activity, slots, expiry, quiet hours |
+| `results.py` | Pure logic: recognises test/build commands and summarises their output (`42 passed`, `build ok`) |
 | `sc_link.py` | Pure functions: frame encoding/parsing of the USB link protocol v1 |
 | `sc-hook.sh` | Claude Code hook (bash, WSL and Git Bash): opt-in check, sends the hook JSON to the agent |
+| `sc-run.sh` | `sc-run <command>`: shows any command (tests, builds, scripts) and its result on the robot |
+| `sc_statusline.py` | Claude Code status line (model, context %, cost) that also reports the context usage |
 | `hooks-settings.json` | Snippet for `~/.claude/settings.json` that registers the hook |
 | `merge_hooks.py` | Merges `hooks-settings.json` into a settings file (idempotent, keeps a `.bak`) |
 | `setup.bat` | Creates (or repairs) `.venv` and installs `requirements.txt` (pyserial) |
@@ -68,11 +71,28 @@ in WSL).
    also copy the entries of `hooks-settings.json` by hand.
 
    Running Claude Code sessions pick up new hooks only after a restart (or after reviewing them in `/hooks`).
+5. Optional, **context usage** on the robot: install the status line (it also prints model, context % and cost at
+   the bottom of Claude Code). In WSL:
+   ```bash
+   cp <repo>/tools/sc-agent/sc_statusline.py ~/.claude/sc_statusline.py
+   python3 <repo>/tools/sc-agent/merge_hooks.py --statusline
+   ```
+   On Windows copy it to `%USERPROFILE%\.claude\` and run `merge_hooks.py --statusline` with the `.venv` Python
+   (that interpreter is then written into the command). `--statusline` only adds `statusLine` when none is
+   configured; otherwise it prints the command to put into your own status line. The script needs Python 3.8+
+   (standard library only, any `python3` on PATH works) and reaches the agent directly on 127.0.0.1, so in WSL it
+   needs mirrored networking (`networkingMode=mirrored`); without it the line is still shown, only the robot gets
+   no context value.
+6. Optional, **sc-run** for commands you start yourself (WSL: `~/.local/bin`; Git Bash: `~/bin`, both on PATH):
+   ```bash
+   mkdir -p ~/.local/bin && cp <repo>/tools/sc-agent/sc-run.sh ~/.local/bin/sc-run && chmod +x ~/.local/bin/sc-run
+   ```
 
 The hook must keep LF line endings; the `.gitattributes` in this directory ensures that for checkouts. The hook
 prints nothing, always exits 0 and gives up after 2 s. All hooks are registered as `async`, so they never slow a
 session down, except `SessionEnd`: it runs synchronously with a 3 s timeout, because async hooks that are still
 running when Claude Code exits are killed, and the robot would keep showing the ended session until it expires.
+`PreToolUse` and `PostToolUse` run for every tool call (two short background `curl` calls each).
 
 ## Opt-in per session
 
@@ -81,21 +101,27 @@ Only selected sessions talk to the robot:
 - marker file: `mkdir -p .claude && touch .claude/stackchan` in the project root (`$CLAUDE_PROJECT_DIR`, or the
   current directory when that is unset). Add it to `.gitignore` if you do not want to share it.
 - or start Claude Code with `SC_LINK=1 claude`. `SC_LINK=0` switches the robot off even with a marker file.
+- The status line uses the same rule (marker in `CLAUDE_PROJECT_DIR`, the workspace project folder or the current
+  folder); `sc-run` needs no opt-in.
 
 ## What the robot shows
 
 | Claude Code hook | Session state | Robot event / bubble |
 |---|---|---|
 | `SessionStart` | `idle` (new session; an existing one only from `done`/`err` or after 5 s without events) | – |
-| `UserPromptSubmit` | `work` | – |
-| `PostToolUse` | `wait` → `work` (a permission prompt was answered); no new session; subagent tools ignored | – |
-| `PostToolUseFailure` | `work` (a waiting session stays `wait`) | `fail`, `<project>: failed` |
+| `UserPromptSubmit` | `work`, activity `think` | – |
+| `PreToolUse` | activity from the tool (see below); never creates a session or changes the state | – |
+| `PostToolUse` | `wait` → `work` (a permission prompt was answered); no new session; subagent tools ignored | test/build command: `pass` (or `fail` when the output shows failures), `<project>: 42 passed` |
+| `PostToolUseFailure` | `work` (a waiting session stays `wait`) | test/build command: `fail`, `<project>: 3 failed`; any other failure: nothing |
+| `SubagentStart` / `SubagentStop` | activity `agents` while subagents run | – |
 | `Notification` (`permission_prompt`, `agent_needs_input`, `elicitation_dialog`, `elicitation_url_dialog`) | `wait` | `needs`, `<project>: needs you`, optional sound |
 | `Notification` (`idle_prompt`) | `work`/`wait` → `idle`, others unchanged; no new session | – |
 | `Stop` | `done` | `done`, `<project>: done` |
 | `StopFailure` | `err` | `err`, `<project>: error` |
 | `PreCompact` | unchanged | `compact`, `<project>: compacting` |
 | `SessionEnd` | removed | – |
+| status line (`sc_statusline.py`) | context usage `ctx` of an existing session | – |
+| `sc-run` start / end | own session named after the folder: `work` + `test`, then `done` / `err` | `pass` / `fail`, e.g. `<project>: 7 passed`, `<project>: exit 2` |
 
 - `idle_prompt` (sent about 60 s after Claude Code started waiting for a prompt) is no call-back, that would repeat
   "needs you" after every answer. It only corrects a session left in `work`/`wait`, e.g. after you interrupted
@@ -110,6 +136,45 @@ Only selected sessions talk to the robot:
 - The hook passes the hook JSON (which may contain your prompt) to the agent over the loopback interface only. The
   agent never logs or forwards it; the robot receives only slot, project name, state and the short bubble text.
 - The robot can never approve a Claude Code permission request: the protocol has no such message.
+
+## Activity, test results and context
+
+- **Activity** (`act` in the state, shown while a session works): `think` after a prompt; from `PreToolUse`:
+  Edit/Write/MultiEdit/NotebookEdit `edit`, Read/Grep/Glob/LS `read`, WebSearch/WebFetch `web`, Task/Agent `agents`,
+  Bash `test` for a test or build command, otherwise `run`; any other tool `run`. While subagents run (counted from
+  `SubagentStart`/`SubagentStop` by `agent_id`) the activity is `agents`. Tool calls of subagents do not change the
+  activity. Cleared by "needs you", `Stop`, `StopFailure` and the `idle_prompt` / `SessionStart` corrections.
+- **Test and build commands** are recognised at the start of every part of a Bash command line (split at `;`, `&&`,
+  `||`, `|`), after environment assignments, `cd x &&`, `time`, `uv run`, `poetry run`, `npx`, `pnpm` and `yarn`:
+  `pytest`, `python -m pytest|unittest`, `tox`, `nox`, `ctest`, `make test|check`, `cmake --build`, `ninja`,
+  `npm|pnpm|yarn test`, `jest`, `vitest`, `cargo test|build`, `go test|build`, `idf.py build|flash|app-flash`,
+  `mvn test`, `gradle test`, `dotnet test`. More with the config key `test_patterns` (regexes, matched at the start
+  of each part). The list lives in `results.py`.
+- **Results**: the output is read for the summary of pytest, unittest, ctest, jest/vitest, cargo test and go test
+  (packages), the last summary in the output wins; otherwise the exit code decides (`tests ok`, `build ok`,
+  `build failed`, `flash failed` when idf.py built but flashing failed). No sound for test results.
+- **Context**: the status line sends `ctx` (0–100 % of the context window); the agent only updates existing
+  sessions with it.
+- State messages wait 200 ms after a change before they are sent, so an activity that flips back within that time
+  sends nothing; at most 5 per second. The robot holds each face for a few seconds anyway.
+
+## sc-run
+
+```bash
+sc-run pytest -q
+sc-run idf.py build
+sc-run ./deploy.sh --dry-run
+```
+
+Shows any command you start yourself: the robot gets a session named after the current folder (`work`, activity
+`test`) while it runs, then `done` or `err` with a bubble such as `firmware: 7 passed`, `firmware: build ok`,
+`firmware: ok` or `firmware: exit 2`. stdin, stdout and stderr stay on the terminal and sc-run exits with the
+command's exit code. In a WSL terminal the command runs in a pseudo-terminal (`script` from util-linux), so colours
+and interactive programs work; in Git Bash, or when sc-run's own input or output is redirected, the output goes
+through `tee`: stderr is then merged into stdout, and on a terminal `FORCE_COLOR`, `CLICOLOR_FORCE` and `PY_COLORS`
+are set so most tools keep their colours. The last 16 KB of output (without colour codes) go to the agent, nothing
+else leaves the PC. No opt-in is needed; the token and `SC_PORT` are used as in `sc-hook.sh`. The session stays 10
+minutes after the command ended (3 hours at most while it runs without an end, e.g. when the terminal was closed).
 
 ## Configuration
 
@@ -127,7 +192,8 @@ comments). All keys with their defaults:
   "quiet_work": "08:00-18:00",
   "quiet_night": "23:00-08:00",
   "serial_log_days": 30,
-  "release_timeout_s": 1800
+  "release_timeout_s": 1800,
+  "test_patterns": []
 }
 ```
 
@@ -141,6 +207,8 @@ comments). All keys with their defaults:
 - `serial_log_days`: serial logs older than this are deleted; `0` keeps them.
 - `release_timeout_s`: a port released for flashing is taken back after this long even without `/acquire` (for a
   killed flash script); `0` waits for `/acquire`.
+- `test_patterns`: extra regular expressions for test commands, e.g. `["\\./run_tests\\.sh\\b", "bats\\b"]`
+  (JSON-escaped backslashes).
 - With another `http_port`, set `SC_PORT` for the hooks too, e.g. `"env": {"SC_PORT": "47124"}` in the Claude Code
   settings, and for `sc-idf.ps1`.
 
@@ -257,7 +325,8 @@ If PowerShell refuses to run scripts, use `Set-ExecutionPolicy -Scope CurrentUse
 The USB link protocol v1 is specified in REQ-003: frames `@@sc<json>*<CRC32>\n`, stop-and-wait with 500 ms ack
 timeout and 2 retries with the same id, `hello` on connect (state resent after every hello), `ping` when nothing was
 sent for 2 s, state snapshots at most 5 per second, events right after the pending state, `clear` on a clean
-shutdown. Every ack of the current firmware carries the robot's boot id and its number of used session slots
+shutdown. Version 1.1 adds the optional `act` and `ctx` per session and the event `pass` (`fail` is only sent for
+test and build commands). Every ack of the current firmware carries the robot's boot id and its number of used session slots
 (`n`): a new boot id (restart without USB re-enumeration) or an `n` that does not match the last acknowledged state
 (the robot dropped its sessions) makes the agent resend the state. Acks without these fields (older firmware) are
 accepted.

@@ -15,6 +15,7 @@ import time  # noqa: E402
 import unittest  # noqa: E402
 import urllib.error  # noqa: E402
 import urllib.request  # noqa: E402
+from dataclasses import replace  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 import merge_hooks  # noqa: E402
@@ -28,7 +29,7 @@ FAST = LinkTiming(
 )
 HELLO_TRIES = 1 + FAST.retries  # frames per unanswered hello
 NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-WORK = [{"slot": 0, "name": "StackChan", "st": "work"}]
+WORK = [{"slot": 0, "name": "StackChan", "st": "work", "act": "think"}]
 
 
 class FakeWriteTimeout(Exception):
@@ -156,13 +157,14 @@ def wait_until(predicate, timeout: float = 3.0) -> bool:
 class AgentTestCase(unittest.TestCase):
     robots: tuple = ()
     config = Config(http_port=0)  # port 0 (ephemeral) is only possible when the Config is built directly
+    timing = FAST
 
     def setUp(self) -> None:
         logging.disable(logging.CRITICAL)
         self.tmp = tempfile.TemporaryDirectory()
         self.backend = FakeBackend(*(self.robots or (FakeRobot(),)))
         self.robot = next(iter(self.backend.robots.values()))
-        self.agent = Agent(self.config, TOKEN, Path(self.tmp.name), self.backend, timing=FAST)
+        self.agent = Agent(self.config, TOKEN, Path(self.tmp.name), self.backend, timing=self.timing)
         self.agent.start()
         self.base = f"http://127.0.0.1:{self.agent.http_port}"
 
@@ -369,6 +371,54 @@ class AgentTest(AgentTestCase):
         self.agent.stop()
         self.assertEqual(self.robot.types()[-1], "clear")
         self.assertTrue(self.robot.closed)
+
+
+class ActivityTest(AgentTestCase):
+    def states(self) -> list[dict]:
+        with self.robot.lock:
+            return [f["sessions"] for f in self.robot.frames if f["t"] == "state"]
+
+    def test_act_and_ctx_only_when_set(self):
+        self.wait_linked()
+        self.hook("SessionStart")
+        idle = [{"slot": 0, "name": "StackChan", "st": "idle"}]
+        self.assertTrue(wait_until(lambda: self.states()[-1] == idle))
+        self.hook("StatusLine", ctx=57)
+        self.assertTrue(wait_until(lambda: self.states()[-1] == [dict(idle[0], ctx=57)]))
+        self.hook("UserPromptSubmit")
+        self.hook("PreToolUse", tool_name="Edit", tool_input={"file_path": "x"})
+        expected = [{"slot": 0, "name": "StackChan", "st": "work", "act": "edit", "ctx": 57}]
+        self.assertTrue(wait_until(lambda: self.states()[-1] == expected), self.states()[-1])
+
+    def test_test_result_event(self):
+        self.wait_linked()
+        self.hook("UserPromptSubmit")
+        response = {"stdout": "== 12 passed in 0.40s ==", "stderr": "", "interrupted": False}
+        self.hook("PostToolUse", tool_name="Bash", tool_input={"command": "pytest"}, tool_response=response)
+        self.assertTrue(wait_until(lambda: self.robot.last("event") is not None))
+        event = self.robot.last("event")
+        self.assertEqual((event["ev"], event["text"]), ("pass", "StackChan: 12 passed"))
+        self.assertNotIn("snd", event)
+
+
+class DebounceTest(AgentTestCase):
+    timing = replace(FAST, state_interval=0.4)
+
+    def test_act_that_flips_back_sends_no_state(self):
+        self.wait_linked()
+        self.hook("UserPromptSubmit")
+        self.hook("PreToolUse", tool_name="Edit")
+        edit = [{"slot": 0, "name": "StackChan", "st": "work", "act": "edit"}]
+        self.assertTrue(wait_until(lambda: (self.robot.last("state") or {}).get("sessions") == edit))
+        time.sleep(0.5)
+        states = self.robot.types().count("state")
+        self.hook("PreToolUse", tool_name="Read")
+        self.hook("PreToolUse", tool_name="Edit")  # back within the debounce: nothing to send
+        time.sleep(0.8)
+        self.assertEqual(self.robot.types().count("state"), states)
+        self.hook("PreToolUse", tool_name="Read")
+        self.assertTrue(wait_until(lambda: self.robot.types().count("state") == states + 1))
+        self.assertEqual(self.robot.last("state")["sessions"][0]["act"], "read")
 
 
 class LegacyFirmwareTest(AgentTestCase):

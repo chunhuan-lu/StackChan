@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # sc-hook.sh - forward a Claude Code hook event to sc-agent (StackChan status robot, REQ-003).
 #
-# Install as ~/.claude/sc-hook.sh (chmod +x) and register it as an async command hook (hooks-settings.json).
+# Install as ~/.claude/sc-hook.sh (chmod +x) and register it as a command hook (hooks-settings.json).
 # Works in WSL and in Git Bash on Windows. Reads the hook JSON from stdin, never prints anything, always exits 0.
 #
 # Opt-in per session:
@@ -21,11 +21,10 @@ case "${SC_LINK:-}" in
   *) exit 0 ;;
 esac
 
+# --- sc-agent connection: keep this block identical in sc-hook.sh and sc-run.sh (test_scripts.py checks it) ---
 token_file="${SC_TOKEN_FILE:-$HOME/.sc-agent/token}"
-[ -r "$token_file" ] || exit 0
-token=$(tr -d ' \r\n' < "$token_file")
-[ -n "$token" ] || exit 0
-
+token=""
+[ -r "$token_file" ] && token=$(tr -d ' \r\n' < "$token_file")
 # Windows curl.exe reaches sc-agent on the Windows loopback, also from WSL through interop. WSL with systemd can
 # lose its interop registration (curl.exe then fails with "Exec format error"); WSL's own curl reaches the Windows
 # loopback too when networkingMode=mirrored is set in .wslconfig.
@@ -33,6 +32,7 @@ interop=0
 for entry in /proc/sys/fs/binfmt_misc/WSLInterop*; do
   [ -e "$entry" ] && interop=1
 done
+curl_bin=""
 if [ -n "${WSL_DISTRO_NAME:-}" ] && [ "$interop" = 0 ] && command -v curl >/dev/null; then
   curl_bin=curl  # WSL without working interop: needs mirrored networking
 elif command -v curl.exe >/dev/null; then
@@ -41,9 +41,10 @@ elif [ -x /mnt/c/Windows/System32/curl.exe ]; then
   curl_bin=/mnt/c/Windows/System32/curl.exe  # WSL with appendWindowsPath=false
 elif command -v curl >/dev/null; then
   curl_bin=curl  # works from WSL only with mirrored networking
-else
-  exit 0
 fi
+# --- end of the shared block ---
+
+[ -n "$token" ] && [ -n "$curl_bin" ] || exit 0
 
 payload=$(cat)
 

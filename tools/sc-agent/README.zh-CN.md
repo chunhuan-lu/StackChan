@@ -20,9 +20,12 @@ Claude Code（WSL 或 Windows）── 异步 hook ── sc-hook.sh ── curl
 | 文件 | 用途 |
 |---|---|
 | `sc_agent.py` | agent 本体：接收 hook 的 HTTP 接口、会话表、USB 链路、串口日志、烧录时释放端口 |
-| `sessions.py` | 纯逻辑：hook 事件到机器人会话/事件的映射、槽位、过期、静音时段 |
+| `sessions.py` | 纯逻辑：hook 事件到机器人会话/事件的映射、活动、槽位、过期、静音时段 |
+| `results.py` | 纯逻辑：识别测试/构建命令并总结其输出（`42 passed`、`build ok`） |
 | `sc_link.py` | 纯函数：USB 链路协议 v1 的帧编码/解析 |
 | `sc-hook.sh` | Claude Code hook（bash，WSL 和 Git Bash 通用）：检查是否启用，把 hook JSON 发给 agent |
+| `sc-run.sh` | `sc-run <命令>`：在机器人上显示任意命令（测试、构建、脚本）及其结果 |
+| `sc_statusline.py` | Claude Code 状态栏（模型、上下文占用、费用），同时上报上下文占用 |
 | `hooks-settings.json` | 注册 hook 用的 `~/.claude/settings.json` 片段 |
 | `merge_hooks.py` | 把 `hooks-settings.json` 合并进 settings 文件（可重复执行，保留 `.bak`） |
 | `setup.bat` | 创建（或修复）`.venv` 并安装 `requirements.txt`（pyserial） |
@@ -64,10 +67,24 @@ Claude Code（WSL 或 Windows）── 异步 hook ── sc-hook.sh ── curl
    `hooks-settings.json` 中的条目。
 
    已经在运行的 Claude Code 会话要重启（或在 `/hooks` 中确认）后才会使用新的 hook。
+5. 可选，在机器人上显示**上下文占用**：安装状态栏脚本（它也会在 Claude Code 底部显示模型、上下文百分比和费用）。在 WSL 中：
+   ```bash
+   cp <repo>/tools/sc-agent/sc_statusline.py ~/.claude/sc_statusline.py
+   python3 <repo>/tools/sc-agent/merge_hooks.py --statusline
+   ```
+   在 Windows 上把它复制到 `%USERPROFILE%\.claude\`，并用 `.venv` 中的 Python 运行 `merge_hooks.py --statusline`
+   （该解释器的路径会写进命令）。`--statusline` 只在还没有配置 `statusLine` 时才添加；否则只打印应写入你自己状态栏的命令。
+   脚本需要 Python 3.8+（只用标准库，PATH 中任意 `python3` 都可以），并直接访问 127.0.0.1 上的 agent，因此在 WSL 中需要
+   镜像网络（`networkingMode=mirrored`）；没有镜像网络时状态栏照常显示，只是机器人收不到上下文数值。
+6. 可选，为你自己启动的命令安装 **sc-run**（WSL：`~/.local/bin`；Git Bash：`~/bin`，都在 PATH 中）：
+   ```bash
+   mkdir -p ~/.local/bin && cp <repo>/tools/sc-agent/sc-run.sh ~/.local/bin/sc-run && chmod +x ~/.local/bin/sc-run
+   ```
 
 hook 脚本必须保持 LF 换行；本目录的 `.gitattributes` 保证检出时如此。脚本不输出任何内容，总是以 0 退出，最多等待 2 秒。
 除 `SessionEnd` 外，所有 hook 都以 `async` 方式注册，不会拖慢会话；`SessionEnd` 同步运行，超时 3 秒，
 因为 Claude Code 退出时仍在运行的异步 hook 会被终止，机器人就会一直显示已结束的会话，直到它过期。
+`PreToolUse` 和 `PostToolUse` 在每次调用工具时都会运行（各是一个很短的后台 `curl` 调用）。
 
 ## 按会话启用
 
@@ -76,21 +93,26 @@ hook 脚本必须保持 LF 换行；本目录的 `.gitattributes` 保证检出�
 - 标记文件：在项目根目录（`$CLAUDE_PROJECT_DIR`，未设置时为当前目录）执行 `mkdir -p .claude && touch .claude/stackchan`。
   不想共享的话把它加入 `.gitignore`。
 - 或者用 `SC_LINK=1 claude` 启动 Claude Code。`SC_LINK=0` 即使有标记文件也关闭。
+- 状态栏脚本使用同样的规则（标记文件位于 `CLAUDE_PROJECT_DIR`、工作区项目目录或当前目录）；`sc-run` 不需要启用。
 
 ## 机器人显示什么
 
 | Claude Code hook | 会话状态 | 机器人事件 / 气泡 |
 |---|---|---|
 | `SessionStart` | `idle`（新会话；已有会话只在 `done`/`err` 或 5 秒无事件后重置） | – |
-| `UserPromptSubmit` | `work` | – |
-| `PostToolUse` | `wait` → `work`（授权请求已被处理）；不新建会话；忽略子代理的工具调用 | – |
-| `PostToolUseFailure` | `work`（等待中的会话保持 `wait`） | `fail`，`<项目>: failed` |
+| `UserPromptSubmit` | `work`，活动 `think` | – |
+| `PreToolUse` | 根据工具设置活动（见下文）；从不新建会话，也不改变状态 | – |
+| `PostToolUse` | `wait` → `work`（授权请求已被处理）；不新建会话；忽略子代理的工具调用 | 测试/构建命令：`pass`（输出中有失败时为 `fail`），`<项目>: 42 passed` |
+| `PostToolUseFailure` | `work`（等待中的会话保持 `wait`） | 测试/构建命令：`fail`，`<项目>: 3 failed`；其他失败：不发事件 |
+| `SubagentStart` / `SubagentStop` | 子代理运行期间活动为 `agents` | – |
 | `Notification`（`permission_prompt`、`agent_needs_input`、`elicitation_dialog`、`elicitation_url_dialog`） | `wait` | `needs`，`<项目>: needs you`，可选提示音 |
 | `Notification`（`idle_prompt`） | `work`/`wait` → `idle`，其他不变；不新建会话 | – |
 | `Stop` | `done` | `done`，`<项目>: done` |
 | `StopFailure` | `err` | `err`，`<项目>: error` |
 | `PreCompact` | 不变 | `compact`，`<项目>: compacting` |
 | `SessionEnd` | 删除 | – |
+| 状态栏（`sc_statusline.py`） | 已有会话的上下文占用 `ctx` | – |
+| `sc-run` 开始 / 结束 | 以文件夹命名的独立会话：`work` + `test`，然后 `done` / `err` | `pass` / `fail`，例如 `<项目>: 7 passed`、`<项目>: exit 2` |
 
 - `idle_prompt`（Claude Code 开始等待提示词约 60 秒后发出）不触发提醒，否则每次回答之后都会再叫一遍"needs you"。
   它只用来纠正停留在 `work`/`wait` 的会话，例如你中断了 Claude（这时不会有 `Stop`）。`PostToolUse` 每次调用工具都会触发
@@ -103,6 +125,41 @@ hook 脚本必须保持 LF 换行；本目录的 `.gitattributes` 保证检出�
 - hook 只通过本机回环接口把 hook JSON（其中可能包含你的提示词）交给 agent。agent 从不记录或转发它；
   机器人只收到槽位、项目名、状态和简短的气泡文字。
 - 机器人永远无法批准 Claude Code 的权限请求：协议里没有这样的消息。
+
+## 活动、测试结果和上下文
+
+- **活动**（状态消息中的 `act`，会话工作时显示）：提示词之后为 `think`；由 `PreToolUse` 决定：
+  Edit/Write/MultiEdit/NotebookEdit 为 `edit`，Read/Grep/Glob/LS 为 `read`，WebSearch/WebFetch 为 `web`，Task/Agent 为
+  `agents`，Bash 运行测试或构建命令时为 `test`，否则为 `run`；其他工具为 `run`。子代理运行期间（按 `agent_id` 统计
+  `SubagentStart`/`SubagentStop`）活动为 `agents`。子代理的工具调用不改变活动。"needs you"、`Stop`、`StopFailure`
+  以及 `idle_prompt` / `SessionStart` 的纠正会清除活动。
+- **测试和构建命令**：在 Bash 命令行的每一段（以 `;`、`&&`、`||`、`|` 分隔）开头识别，事先去掉环境变量赋值、`cd x &&`、
+  `time`、`uv run`、`poetry run`、`npx`、`pnpm` 和 `yarn`：`pytest`、`python -m pytest|unittest`、`tox`、`nox`、`ctest`、
+  `make test|check`、`cmake --build`、`ninja`、`npm|pnpm|yarn test`、`jest`、`vitest`、`cargo test|build`、`go test|build`、
+  `idf.py build|flash|app-flash`、`mvn test`、`gradle test`、`dotnet test`。可用配置键 `test_patterns` 增加（正则表达式，
+  在每一段开头匹配）。列表在 `results.py` 中。
+- **结果**：从输出中读取 pytest、unittest、ctest、jest/vitest、cargo test 和 go test（按包计数）的汇总，以输出中最后一个
+  汇总为准；否则由退出码决定（`tests ok`、`build ok`、`build failed`，idf.py 构建成功但烧录失败时为 `flash failed`）。
+  测试结果不发声。
+- **上下文**：状态栏脚本发送 `ctx`（上下文窗口占用 0–100 %）；agent 只用它更新已有会话。
+- 状态变化后等待 200 ms 再发送状态消息，因此在这段时间内又变回原样的活动不会发送任何内容；每秒最多 5 次。
+  机器人本身也会让每个表情至少保持几秒。
+
+## sc-run
+
+```bash
+sc-run pytest -q
+sc-run idf.py build
+sc-run ./deploy.sh --dry-run
+```
+
+显示你自己启动的任意命令：命令运行期间，机器人得到一个以当前文件夹命名的会话（`work`，活动 `test`），结束后变为
+`done` 或 `err`，并显示气泡，例如 `firmware: 7 passed`、`firmware: build ok`、`firmware: ok` 或 `firmware: exit 2`。
+stdin、stdout 和 stderr 仍在终端上，sc-run 以命令的退出码退出。在 WSL 终端中命令运行在伪终端里（util-linux 的 `script`），
+颜色和交互程序都正常；在 Git Bash 中，或 sc-run 自己的输入/输出被重定向时，输出经过 `tee`：这时 stderr 合并到 stdout，
+并且在终端上会设置 `FORCE_COLOR`、`CLICOLOR_FORCE` 和 `PY_COLORS`，让大多数工具保留颜色。输出的最后 16 KB（去掉颜色代码）
+发给 agent，其他内容不会离开电脑。不需要启用；令牌和 `SC_PORT` 的用法与 `sc-hook.sh` 相同。命令结束后会话保留 10 分钟
+（一直没有结束时最多 3 小时，例如终端被关掉）。
 
 ## 配置
 
@@ -119,7 +176,8 @@ hook 脚本必须保持 LF 换行；本目录的 `.gitattributes` 保证检出�
   "quiet_work": "08:00-18:00",
   "quiet_night": "23:00-08:00",
   "serial_log_days": 30,
-  "release_timeout_s": 1800
+  "release_timeout_s": 1800,
+  "test_patterns": []
 }
 ```
 
@@ -131,6 +189,7 @@ hook 脚本必须保持 LF 换行；本目录的 `.gitattributes` 保证检出�
 - `serial_log_days`：超过这个天数的串口日志会被删除；`0` 表示一直保留。
 - `release_timeout_s`：为烧录而释放的端口即使没有收到 `/acquire`，过了这么久也会被收回（应对被强行关掉的烧录脚本）；
   `0` 表示一直等 `/acquire`。
+- `test_patterns`：额外的测试命令正则表达式，例如 `["\\./run_tests\\.sh\\b", "bats\\b"]`（JSON 中反斜杠要转义）。
 - 修改 `http_port` 后，hook 也要设置 `SC_PORT`，例如在 Claude Code 设置中加 `"env": {"SC_PORT": "47124"}`；
   `sc-idf.ps1` 同样读取 `SC_PORT`。
 
@@ -239,7 +298,8 @@ agent 占用着 COM 口，所以直接执行 `idf.py flash` 会报"端口被占�
 
 USB 链路协议 v1 定义在 REQ-003 中：帧格式 `@@sc<json>*<CRC32>\n`；停等式发送，ack 超时 500 ms，用相同 id 最多重试 2 次；
 连接时发 `hello`（每次 hello 之后都重发状态）；2 秒内没有发送任何内容时发 `ping`；状态快照每秒最多 5 次；
-事件紧跟在待发状态之后立即发送；正常退出时发 `clear`。当前固件的每个 ack 都带有机器人的 boot id 和已占用的会话槽位数（`n`）：
+事件紧跟在待发状态之后立即发送；正常退出时发 `clear`。1.1 版增加了每个会话可选的 `act` 和 `ctx`，以及事件 `pass`
+（`fail` 只用于测试和构建命令）。当前固件的每个 ack 都带有机器人的 boot id 和已占用的会话槽位数（`n`）：
 boot id 改变（重启但 USB 没有重新枚举）或 `n` 与最近一次确认的状态不符（机器人丢掉了会话）时，agent 会重发状态。
 不带这些字段的 ack（旧固件）照常接受。
 
