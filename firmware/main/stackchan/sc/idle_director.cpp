@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: MIT
  */
 #include "idle_director.h"
+#include "sc_settings.h"
+#include "settings_panel.h"
 #include "../avatar/decorators/decorators.h"
 #include "../avatar/skins/default/default.h"
 #include "../utils/random.h"
@@ -110,7 +112,27 @@ static float clamp01(float v)
 static float head_moves_per_hour(int activity)
 {
     static constexpr float kScale[] = {0.0f, 0.5f, 1.0f, 2.0f};
-    return CONFIG_SC_IDLE_HEAD_MOVES_PER_HOUR * kScale[std::clamp(activity, 0, 3)];
+    return setting(SettingId::HeadMoves) * kScale[std::clamp(activity, 0, 3)];
+}
+
+static bool faces_on()
+{
+    return ScSettings::get().enabled(SettingId::Faces);
+}
+
+static bool claude_on()
+{
+    return ScSettings::get().enabled(SettingId::Claude);
+}
+
+// Next special idle face, minutes from the settings (the first one comes after half the time).
+static uint32_t idle_face_delay(bool first)
+{
+    const int scale = first ? 30000 : 60000;
+    // The pair is read without a lock: never hand rnd() a reversed range.
+    const int a = setting(SettingId::FaceMinMinutes);
+    const int b = setting(SettingId::FaceMaxMinutes);
+    return rnd(std::min(a, b) * scale, std::max(a, b) * scale);
 }
 
 static float clock_energy(int hour)
@@ -192,7 +214,7 @@ IdleDirectorModifier::~IdleDirectorModifier()
 
 bool IdleDirectorModifier::requestScreenWake()
 {
-    if (!s_asleep) {
+    if (!s_asleep || !ScSettings::get().enabled(SettingId::TapWake)) {
         return false;
     }
     s_screen_wake = true;
@@ -221,10 +243,11 @@ void IdleDirectorModifier::_update(Modifiable& sc)
         }
         _next_glance    = now + rnd(4000, 9000);
         _next_action    = now + rnd(30000, 60000);
-        _next_idle_face = now + rnd(120000, 300000);
+        _next_idle_face = now + idle_face_delay(true);
+        _activity       = setting(SettingId::Activity);
         poll_clock(now);
         mclog::tagInfo(_tag, "started: activity {}, {} head moves/h, sleep {}:00-{}:00", _activity,
-                       head_moves_per_hour(_activity), CONFIG_SC_IDLE_SLEEP_HOUR, CONFIG_SC_IDLE_WAKE_HOUR);
+                       head_moves_per_hour(_activity), setting(SettingId::SleepHour), setting(SettingId::WakeHour));
     }
 
     handle_touch_events(sc, now);
@@ -234,9 +257,21 @@ void IdleDirectorModifier::_update(Modifiable& sc)
         note_interaction(now);
         wake_up(sc, now, false);
     }
+#if CONFIG_SC_SETTINGS_PANEL
+    if (settings_panel_open()) {
+        // Someone is changing settings: stay awake (and with a normal screen) meanwhile.
+        GetIdleMood().lastInteractionMs = now;
+        if (_phase == Phase::Sleeping) {
+            mclog::tagInfo(_tag, "settings panel opened while asleep");
+            wake_up(sc, now, false);
+        }
+    }
+#endif
     ClaudeEvent claude_event;
     while (GetClaudeStatus().popEvent(claude_event, now)) {
-        on_claude_event(sc, claude_event, now);
+        if (claude_on()) {
+            on_claude_event(sc, claude_event, now);
+        }
     }
     if (_shake_event.exchange(false)) {
         on_shake(sc, now);
@@ -618,19 +653,21 @@ void IdleDirectorModifier::poll_light(uint32_t now)
         _dark = false;
         return;
     }
+    const int dark_lux   = setting(SettingId::DarkLux);
+    const int bright_lux = setting(SettingId::BrightLux);
     if (_lux < 0.0f) {
-        _bl_lit = lux > CONFIG_SC_IDLE_DARK_LUX;  // first sample
+        _bl_lit = lux > dark_lux;  // first sample
     }
     _lux = lux;
 
-    if (lux < CONFIG_SC_IDLE_DARK_LUX) {
+    if (lux < dark_lux) {
         _bright_since = 0;
         _dark_since   = _dark_since ? _dark_since : now;
         if (!_dark && now - _dark_since >= kDarkHoldMs) {
             _dark = true;
             mclog::tagInfo(_tag, "dark ({:.1f} lux)", lux);
         }
-    } else if (lux > CONFIG_SC_IDLE_BRIGHT_LUX) {
+    } else if (lux > bright_lux) {
         _dark_since   = 0;
         _bright_since = _bright_since ? _bright_since : now;
         if (_dark && now - _bright_since >= kBrightHoldMs) {
@@ -644,7 +681,7 @@ void IdleDirectorModifier::poll_light(uint32_t now)
 
     // Sleep backlight: brighten as soon as the room is lit, dim after a shorter darkness hold than
     // the one that sends the robot to sleep.
-    if (lux > CONFIG_SC_IDLE_BRIGHT_LUX) {
+    if (lux > bright_lux) {
         _bl_lit = true;
     } else if (_dark_since && now - _dark_since >= kBacklightDarkMs) {
         _bl_lit = false;
@@ -681,8 +718,8 @@ bool IdleDirectorModifier::is_night() const
     if (!_time_valid) {
         return false;
     }
-    const int wake  = CONFIG_SC_IDLE_WAKE_HOUR;
-    const int sleep = CONFIG_SC_IDLE_SLEEP_HOUR;
+    const int wake  = setting(SettingId::WakeHour);
+    const int sleep = setting(SettingId::SleepHour);
     if (sleep > wake) {
         return _hour >= sleep || _hour < wake;
     }
@@ -703,6 +740,7 @@ void IdleDirectorModifier::update_mood(uint32_t now)
     mood.affection += (0.3f - mood.affection) * dt / 86400.0f;
     mood.energy = clock_energy(_time_valid ? _hour : -1);
 
+    _activity        = setting(SettingId::Activity);  // the settings panel and voice change it live
     const float rate = head_moves_per_hour(_activity);
     const float cap  = std::max(1.0f, rate / 4.0f);
     mood.headTokens  = std::min(cap, mood.headTokens + rate / 3600.0f * dt);
@@ -863,7 +901,11 @@ void IdleDirectorModifier::update_awake(Modifiable& sc, uint32_t now)
     if (_afterglow_at && now >= _afterglow_at) {
         _afterglow_at = 0;
         mclog::tagInfo(_tag, "stroke afterglow");
-        show_temp_face(sc, FaceStyle::Blush, 5000, now);
+        if (faces_on()) {
+            show_temp_face(sc, FaceStyle::Blush, 5000, now);
+        } else {
+            play_keys(sc, anim::contentSquint(), AnimPurpose::Reaction, now);
+        }
         set_led_fx(LedFx::Heartbeat, 24, 4, 10, 5000, now);
         return;
     }
@@ -989,7 +1031,11 @@ void IdleDirectorModifier::run_behavior(Modifiable& sc, uint32_t now)
             play_keys(sc, anim::yawn(), AnimPurpose::Idle, now);
             break;
         case kSideEye:
-            show_temp_face(sc, FaceStyle::Peek, 3500, now);
+            if (faces_on()) {
+                show_temp_face(sc, FaceStyle::Peek, 3500, now);
+            } else {
+                play_keys(sc, anim::sideEyeAtLight(rnd(0, 1) == 0), AnimPurpose::Idle, now);
+            }
             break;
         case kSigh:
             play_keys(sc, anim::sigh(), AnimPurpose::Idle, now);
@@ -1004,7 +1050,11 @@ void IdleDirectorModifier::run_behavior(Modifiable& sc, uint32_t now)
             play_keys(sc, anim::hiccup(), AnimPurpose::Idle, now);
             break;
         case kHum:
-            show_temp_face(sc, FaceStyle::Hum, 6000, now);
+            if (faces_on()) {
+                show_temp_face(sc, FaceStyle::Hum, 6000, now);
+            } else {
+                play_keys(sc, anim::silentHum(), AnimPurpose::Idle, now);
+            }
             break;
         case kNodOff: {
             // Eyes droop, the head dips a little, then jerks awake.
@@ -1148,7 +1198,7 @@ void IdleDirectorModifier::update_led(uint32_t now)
     }
 
     const auto& m     = GetIdleMood();
-    const float scale = CONFIG_SC_IDLE_LED_MAX / 24.0f;
+    const float scale = setting(SettingId::LedMax) / 24.0f;
     float target[3]   = {0, 0, 0};
 
     if (_led_fx != LedFx::None && now < _led_fx_until) {
@@ -1306,8 +1356,8 @@ static lv_obj_t* avatar_panel(Modifiable& sc)
 
 void IdleDirectorModifier::show_temp_face(Modifiable& sc, FaceStyle style, uint32_t durationMs, uint32_t now)
 {
-    if (_phase != Phase::Awake) {
-        return;
+    if (_phase != Phase::Awake || !faces_on()) {
+        return;  // without faces the bubble alone tells it
     }
     if (_anim) {
         stop_anim(sc);
@@ -1331,7 +1381,7 @@ FaceStyle IdleDirectorModifier::claude_face(uint32_t now)
     _claude_full      = false;
 
     ClaudeStatus::Sessions sessions;
-    if (!GetClaudeStatus().snapshot(sessions, now)) {
+    if (!claude_on() || !GetClaudeStatus().snapshot(sessions, now)) {
         return _claude_face;
     }
     // Priority: a waiting session, then any working one (the latest started), then a recent result.
@@ -1421,7 +1471,7 @@ void IdleDirectorModifier::update_face(Modifiable& sc, uint32_t now)
         _anim && (_anim->touchesMouth() || _anim_purpose != AnimPurpose::Idle || !_face.allowsGlances());
     // _paused_until covers the shake and tap reactions, which other modifiers draw on the default features.
     if (_phase != Phase::Awake || _sleep_pose || anim_owns || _held || _tilted || _emotion_restore_at ||
-        now < _paused_until) {
+        now < _paused_until || !faces_on()) {
         if (_face.style() != FaceStyle::None) {
             _face.clear(av);
             _temp_face = FaceStyle::None;
@@ -1439,7 +1489,7 @@ void IdleDirectorModifier::update_face(Modifiable& sc, uint32_t now)
             desired = claude;
         } else if (now >= _next_idle_face && !_anim && !_touching) {
             // Now and then a special face for a few seconds; mostly the soft smile.
-            _next_idle_face = now + rnd(240000, 600000);
+            _next_idle_face = now + idle_face_delay(false);
             _last_idle_face = pick_idle_face();
             show_temp_face(sc, _last_idle_face, rnd(5000, 8000), now);
             return;
@@ -1465,7 +1515,7 @@ void IdleDirectorModifier::update_face(Modifiable& sc, uint32_t now)
 bool IdleDirectorModifier::update_claude_led(uint32_t now)
 {
     ClaudeStatus::Sessions sessions;
-    if (!GetClaudeStatus().snapshot(sessions, now)) {
+    if (!claude_on() || !GetClaudeStatus().snapshot(sessions, now)) {
         if (_claude_led_active) {
             _claude_led_active = false;
             _led_written[0] = _led_written[1] = _led_written[2] = -1;  // mood light rewrites everything
@@ -1480,7 +1530,7 @@ bool IdleDirectorModifier::update_claude_led(uint32_t now)
 
     static constexpr uint32_t kDoneDimMs = 10 * 60 * 1000;
     const float t     = now / 1000.0f;
-    const float scale = CONFIG_SC_IDLE_LED_MAX / 24.0f * (_phase == Phase::Sleeping ? 0.35f : 1.0f);
+    const float scale = setting(SettingId::LedMax) / 24.0f * (_phase == Phase::Sleeping ? 0.35f : 1.0f);
     bool dirty        = false;
     for (int slot = 0; slot < ClaudeStatus::kSlots; ++slot) {
         const auto& s = sessions[slot];
@@ -1550,7 +1600,7 @@ void IdleDirectorModifier::restore_backlight()
 
 int IdleDirectorModifier::sleep_backlight() const
 {
-    int target = (_lux >= 0.0f && _bl_lit) ? CONFIG_SC_IDLE_SLEEP_BACKLIGHT_LIT : CONFIG_SC_IDLE_SLEEP_BACKLIGHT;
+    int target = setting((_lux >= 0.0f && _bl_lit) ? SettingId::SleepBacklightLit : SettingId::SleepBacklight);
     if (_saved_backlight >= 0) {
         target = std::min(target, _saved_backlight);  // sleeping never brightens the screen (0 stays off)
     }

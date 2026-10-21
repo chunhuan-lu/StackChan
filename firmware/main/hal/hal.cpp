@@ -9,6 +9,13 @@
 #if CONFIG_SC_USB_LINK
 #include "sc/usb_link.h"  // [StackChan fork]
 #endif
+#if CONFIG_SC_SETTINGS_PANEL
+#include <stackchan/sc/settings_panel.h>  // [StackChan fork]
+#endif
+#if CONFIG_SC_IDLE_DIRECTOR || CONFIG_SC_SETTINGS_PANEL || CONFIG_SC_EXT_POWER_NO_STANDBY
+#define SC_HAS_SETTINGS 1
+#include <stackchan/sc/sc_settings.h>  // [StackChan fork]
+#endif
 #include <mooncake_log.h>
 #include <nvs_flash.h>
 
@@ -35,6 +42,9 @@ void Hal::init()
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+#if SC_HAS_SETTINGS
+    stackchan::sc::ScSettings::get();  // [StackChan fork] load here rather than in the board's timer callback
+#endif
 
     xiaozhi_board_init();
     xiaozhi_mcp_init();
@@ -174,6 +184,11 @@ static void _stackchan_update_task(void* param)
             // Setup when xiaozhi ready
             GetHAL().startSntp();
             view::create_home_indicator([]() { GetHAL().requestWarmReboot(0); }, 0x81DBBD, 0x134233);
+#if CONFIG_SC_SETTINGS_PANEL
+            if (!stackchan::sc::ScSettings::get().available().empty()) {  // [StackChan fork]
+                view::set_home_indicator_settings([]() { stackchan::sc::open_settings_panel(); });
+            }
+#endif
             view::create_status_bar(0x81DBBD, 0x134233);
             is_setup_done = true;
         }
@@ -186,6 +201,10 @@ static void _stackchan_update_task(void* param)
 void Hal::startXiaozhi()
 {
     mclog::tagInfo(_tag, "start xiaozhi");
+
+#if CONFIG_SC_IDLE_DIRECTOR
+    stackchan::sc::ScSettings::get().reload();  // [StackChan fork] pick up "activity" from the Settings app
+#endif
 
     auto& motion = GetStackChan().motion();
     motion.setAutoAngleSyncEnabled(true);

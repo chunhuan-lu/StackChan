@@ -1007,11 +1007,16 @@ menu "BLE prph Configuration"
 endmenu
 
 # [StackChan fork] Options added by chunhuan-lu/StackChan. Symbols use the SC_ prefix.
+# Defaults keep the upstream behaviour; the fork's own choices are in sdkconfig.defaults.sc.
 menu "StackChan fork options"
+
+    comment "Defaults = upstream behaviour. This fork's choices: sdkconfig.defaults.sc"
+
+    menu "OTA and time"
 
     config SC_DISABLE_AUTO_OTA
         bool "Disable automatic firmware OTA in AI Agent mode"
-        default y
+        default n
         help
             Upstream xiaozhi installs any newer firmware reported by the OTA server every time the
             AI Agent mode starts, which would overwrite self-built firmware. When enabled, a newer
@@ -1019,27 +1024,32 @@ menu "StackChan fork options"
 
     config SC_DISABLE_REMOTE_OTA
         bool "Disable server-pushed firmware and assets updates"
-        default y
+        default n
         help
             Do not register the user-only MCP tools self.upgrade_firmware and
             self.assets.set_download_url, through which the server can push a firmware image or
             an assets package, and ignore an assets download URL that was pushed earlier (it would
-            replace the custom wake word model). Manual update from Settings > About is not affected.
+            replace a custom wake word model). Manual update from Settings > About is not affected.
 
     config SC_DEFAULT_TIMEZONE
         string "Default timezone (POSIX TZ)"
-        default "AEST-10AEDT,M10.1.0,M4.1.0/3"
+        default "GMT0"
         help
-            Used until a timezone is chosen in Settings > System (upstream default: GMT0).
-            Default: Melbourne with daylight saving.
+            Used until a timezone is chosen in Settings > System. Example for Melbourne with
+            daylight saving: AEST-10AEDT,M10.1.0,M4.1.0/3
+
+    endmenu # OTA and time
+
+    menu "Idle behaviour (AI Agent)"
 
     config SC_IDLE_DIRECTOR
-        bool "Idle behaviour director in AI Agent mode"
-        default y
+        bool "Idle behaviour director"
+        default n
         help
             Replaces the random idle head motion with a mood-driven director: daily schedule,
-            sleeping in the dark, head-touch and pick-up reactions, screen-only micro animations
-            and a mood light. Silent: it never plays sounds.
+            sleeping in the dark, head-touch and pick-up reactions, screen-only micro animations,
+            drawn faces and a mood light. Silent: it never plays sounds.
+            The values below are defaults; with SC_SETTINGS_PANEL they can be changed on the device.
 
     if SC_IDLE_DIRECTOR
 
@@ -1064,7 +1074,7 @@ menu "StackChan fork options"
 
     config SC_IDLE_DARK_LUX
         int "Darkness threshold (lux)"
-        range 0 1000
+        range 0 100
         default 3
         help
             The robot falls asleep after the ambient light stays below this value for one minute.
@@ -1072,7 +1082,7 @@ menu "StackChan fork options"
 
     config SC_IDLE_BRIGHT_LUX
         int "Light-on threshold (lux)"
-        range 1 2000
+        range 1 200
         default 8
         help
             Must be higher than the darkness threshold (hysteresis).
@@ -1106,11 +1116,35 @@ menu "StackChan fork options"
         range 0 255
         default 24
 
+    config SC_IDLE_FACES
+        bool "Drawn faces (soft smile, special faces, Claude Code faces)"
+        default y
+        help
+            Vector faces drawn over the avatar (REQ-005) instead of the plain dot eyes. Without
+            them, the director uses the upstream eyes and its eye animations only.
+
+    config SC_IDLE_FACE_MIN_MINUTES
+        int "Special idle face: shortest interval (minutes)"
+        range 1 60
+        default 4
+
+    config SC_IDLE_FACE_MAX_MINUTES
+        int "Special idle face: longest interval (minutes)"
+        range 1 60
+        default 10
+        help
+            Now and then a special face (sparkle, wink, peek...) replaces the soft smile for a few
+            seconds, at a random time between the shortest and the longest interval.
+
     endif # SC_IDLE_DIRECTOR
+
+    endmenu # Idle behaviour
+
+    menu "Power and touch"
 
     config SC_EXT_POWER_NO_STANDBY
         bool "No power-save sleep or auto power-off while USB power is present"
-        default y
+        default n
         help
             Detect external power from the AXP2101 VBUS-good flag (debounced) instead of the
             battery current direction, log the power state at boot and on every change, and keep
@@ -1122,21 +1156,43 @@ menu "StackChan fork options"
 
     config SC_TOUCH_FIXES
         bool "AI Agent touch fixes"
-        default y
+        default n
         help
-            A tap on the sleeping face wakes it instead of starting a conversation, a swipe from the
-            bottom edge (the Home gesture) no longer toggles the conversation, the Home button
-            ignores clicks while it slides in or out and shows "Going home..." before the restart,
-            and implausible touch controller samples are dropped.
+            A tap on the sleeping face wakes it instead of starting a conversation (with the idle
+            director), a swipe from the bottom edge (the Home gesture) no longer toggles the
+            conversation, the Home button ignores clicks while it slides in or out and shows
+            "Going home..." before the restart, and implausible touch controller samples are dropped.
+
+    endmenu # Power and touch
+
+    menu "Claude Code link"
 
     config SC_USB_LINK
         bool "Claude Code status link over the USB port"
-        default y
+        default n
         depends on ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG
         help
             Receive checksummed JSON-line commands from the PC agent (tools/sc-agent, REQ-003) on
             the native USB-Serial/JTAG port, next to the normal log output. The idle director shows
             the Claude Code sessions on the mood LEDs and reacts to their events. Inactive until the
             agent connects; about 1 KB of internal RAM (buffers and task stack are in PSRAM).
+
+    endmenu # Claude Code link
+
+    menu "Settings"
+
+    config SC_SETTINGS_PANEL
+        bool "Settings panel and voice settings for the fork features"
+        default n
+        help
+            In AI Agent mode, swipe up from the bottom edge and tap the gear next to the Home
+            button: a panel changes the idle activity and, for the features compiled in, the
+            schedule, light thresholds, sleep screen, light brightness, faces, tap to wake, the
+            Claude Code display and standby on USB. The MCP tools self.robot.get_settings and
+            self.robot.set_setting do the same by voice. Values are stored in NVS (namespace
+            "sc_cfg") and clamped to the ranges above; the Kconfig values are the defaults and
+            "Reset to defaults" brings them back. Without this option the Kconfig values are used.
+
+    endmenu # Settings
 
 endmenu

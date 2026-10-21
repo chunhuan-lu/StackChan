@@ -16,5 +16,7 @@ bool is_home_indicator_created();
 void destroy_home_indicator();
 // [StackChan fork] Whether going home restarts the device (shows "Going home..."); default: always.
 void set_home_indicator_will_restart(std::function<bool(void)> willRestart);
+// [StackChan fork] Add a gear next to the Home button; onSettings runs in update_home_indicator().
+void set_home_indicator_settings(std::function<void(void)> onSettings);
 
 }  // namespace view

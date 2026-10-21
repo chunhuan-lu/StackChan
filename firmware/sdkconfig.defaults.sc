@@ -1,4 +1,5 @@
 # StackChan fork overrides, applied after sdkconfig.defaults (see CMakeLists.txt).
+# Kconfig defaults keep the upstream behaviour; this file turns on the fork features.
 # Defaults only apply when sdkconfig is generated: delete firmware/sdkconfig (or run `idf.py fullclean`)
 # after changing this file.
 
@@ -37,6 +38,14 @@ CONFIG_SC_TOUCH_FIXES=y
 
 # Claude Code status link over USB (REQ-003, phase 1).
 CONFIG_SC_USB_LINK=y
+
+# Drawn faces (REQ-005); a special idle face every 4-10 minutes.
+CONFIG_SC_IDLE_FACES=y
+CONFIG_SC_IDLE_FACE_MIN_MINUTES=4
+CONFIG_SC_IDLE_FACE_MAX_MINUTES=10
+
+# Settings panel (gear next to Home) and voice settings (REQ-006). The values above are its defaults.
+CONFIG_SC_SETTINGS_PANEL=y
 
 # Core dumps to the existing 64 KB coredump partition (read with idf.py coredump-info). Coredump
 # log strings would cost ~5 KB of internal RAM, so they are off.

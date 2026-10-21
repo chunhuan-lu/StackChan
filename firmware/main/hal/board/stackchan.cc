@@ -23,7 +23,8 @@
 #include <hal/hal.h>
 #include <memory>
 #if CONFIG_SC_EXT_POWER_NO_STANDBY
-#include <hal/sc/ina226.h>  // [StackChan fork]
+#include <hal/sc/ina226.h>               // [StackChan fork]
+#include <stackchan/sc/sc_settings.h>  // [StackChan fork]
 #endif
 
 #define TAG "M5Stack-StackChan-Board"
@@ -418,12 +419,12 @@ private:
     {
 #if CONFIG_SC_EXT_POWER_NO_STANDBY
         // [StackChan fork] has_external_power is the debounced VBUS flag here: a battery helping out
-        // while USB is plugged in no longer starts the sleep / power-off countdown.
-        (void)is_discharging;
-        return !has_external_power || xiaozhi_config_.allowShutdownWhenCharging;
-#else
-        return is_discharging || (has_external_power && xiaozhi_config_.allowShutdownWhenCharging);
+        // while USB is plugged in no longer starts the sleep / power-off countdown (setting "usb_awake").
+        if (stackchan::sc::setting(stackchan::sc::SettingId::UsbAwake)) {
+            return !has_external_power || xiaozhi_config_.allowShutdownWhenCharging;
+        }
 #endif
+        return is_discharging || (has_external_power && xiaozhi_config_.allowShutdownWhenCharging);
     }
 
 #if CONFIG_SC_EXT_POWER_NO_STANDBY

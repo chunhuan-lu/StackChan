@@ -20,6 +20,7 @@
 #include <hal/hal.h>
 #if CONFIG_SC_IDLE_DIRECTOR
 #include <stackchan/sc/idle_director.h>  // [StackChan fork]
+#include <stackchan/sc/sc_settings.h>    // [StackChan fork]
 #include "application.h"
 #include "board.h"
 #endif
@@ -623,7 +624,8 @@ void StackChanAvatarDisplay::SetPowerSaveMode(bool on)
 {
     LvglDisplay::SetPowerSaveMode(on);  // "sleepy" / "neutral"
     if (on) {
-        GetHAL().setBackLightBrightness(CONFIG_SC_IDLE_SLEEP_BACKLIGHT, false);  // OnExitSleepMode restores
+        // OnExitSleepMode restores
+        GetHAL().setBackLightBrightness(stackchan::sc::setting(stackchan::sc::SettingId::SleepBacklight), false);
         // A wake word or tap may have ended power save while we waited for the display lock; its
         // RestoreBrightness then ran before the dim above.
         if (Application::GetInstance().GetDeviceState() != kDeviceStateIdle) {

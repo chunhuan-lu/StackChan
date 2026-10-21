@@ -8,6 +8,10 @@
 #include <mcp_server.h>
 #include <stackchan/stackchan.h>
 #include <apps/common/common.h>
+#include <sdkconfig.h>
+#if CONFIG_SC_SETTINGS_PANEL
+#include "sc/settings_mcp.h"  // [StackChan fork]
+#endif
 
 using namespace stackchan;
 
@@ -146,4 +150,8 @@ void Hal::xiaozhi_mcp_init()
                            tools::stop_reminder(id);
                            return true;
                        });
+
+#if CONFIG_SC_SETTINGS_PANEL
+    ::sc::add_settings_mcp_tools();  // [StackChan fork] REQ-006
+#endif
 }
