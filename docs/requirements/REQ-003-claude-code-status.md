@@ -125,6 +125,17 @@ agent resend the state.
 
 Staleness: if the device receives no valid frame for 30 s it drops the sessions (agent stopped or cable unplugged).
 
+### Protocol v1.1 additions (backwards compatible, receivers ignore unknown fields)
+
+- `state.sessions[i].act` (optional): what a working session is doing right now: `think` (prompt received, no tool
+  yet), `edit` (Edit/Write/NotebookEdit), `run` (Bash and other tools), `read` (Read/Grep/Glob), `web`
+  (WebSearch/WebFetch), `test` (a test or build command, or `sc-run`), `agents` (subagents running). Absent or empty
+  when idle, waiting, done or in error.
+- `state.sessions[i].ctx` (optional, 0–100): context window usage reported by the status-line script.
+- `event.ev` value `pass`: a test or build command succeeded; `text` carries the result, e.g. `StackChan: 42 passed`.
+  `fail` is now only sent for test and build commands (other failing commands are ignored); its text carries the
+  counts when known, e.g. `StackChan: 3 failed`.
+
 ## Event mapping
 
 | Claude Code | Robot | Bubble |
@@ -168,7 +179,9 @@ Firmware (`feat/claude-link`):
 - LED colours respect the PY32 driver's RGB565 steps (dim non-zero channels are lifted to the first step).
 - Deviation: during a conversation the director does not exist, so the session LEDs are off; events wait (≤ 30 s) and
   are shown afterwards.
-- Not in phase 1: subagent spinner, context-usage face (needs the status-line wrapper).
+- Protocol v1.1 (2026-10-21, same day): `act` drives the faces of REQ-005 (work, think, curious for web), subagents
+  colour the session LED cyan and pulse faster, `ctx` >= 80 % makes the "full" face likely among the occasional faces,
+  `pass` shows the "done" face with the result. Claude reactions now use FaceArt faces instead of emotions.
 
 PC side (`tools/sc-agent/`, see its README):
 - `idle_prompt` notifications are ignored (Claude Code sends one about 60 s after every finished answer, which would
@@ -177,7 +190,11 @@ PC side (`tools/sc-agent/`, see its README):
   ignored for 60 s against late async hooks.
 - Ping only after 2 s without traffic; a missing ack after retries counts as a lost link (hello, then the state again).
 - `/release` auto-reacquires after 30 min (`release_timeout_s`, 0 = wait for `/acquire`).
-- `merge_hooks.py` merges the hook snippet into a settings.json (writes a `.bak`).
+- `merge_hooks.py` merges the hook snippet into a settings.json (writes a `.bak`); `--statusline` installs
+  `sc_statusline.py` when no status line is configured (prints model, ctx %, cost and reports ctx).
+- v1.1: PreToolUse / SubagentStart / SubagentStop hooks set `act`; `results.py` recognises test and build commands and
+  parses pytest, unittest, ctest, jest/vitest, cargo, go and idf.py results (`pass` / `fail` with counts); other failing
+  commands no longer react; `sc-run <command>` reports any command run outside Claude Code.
 
 ## Open points
 

@@ -21,6 +21,7 @@
 | B-005 | 不要在睡眠时持有 LVGL 锁 | todo | 小智忙碌时，`_stackchan_update_task` 会拿着锁执行 `vTaskDelay(100)`（`hal.cpp`）。 |
 | B-006 | 恢复热点配网 | todo | 1.6 只允许通过 App（蓝牙）配网，而自编译固件过不了 App 的握手。目前的备用办法：用 nRF Connect 通过蓝牙发送 `setWifi`。 |
 | B-007 | 检查音频任务调度 | todo | 只在说话卡顿复发时处理：`opus_codec`（优先级 2）低于 LVGL 和 stackchan 任务（优先级 3）。 |
+| B-020 | 更生动的表情 | doing | [REQ-005](requirements/REQ-005-faces.zh-CN.md)：FaceArt 画出 16 个矢量表情（温和微笑作为基础脸，每 4–10 分钟偶尔换一个特殊表情，Claude Code 相关表情由会话状态和事件驱动）。等待真机验证。 |
 | B-019 | 待机、供电与触摸改进 | doing | [REQ-004](requirements/REQ-004-standby-power-touch.zh-CN.md)，分支 `fix/standby-power`：睡眠亮度分暗/亮两档（5 / 45）并渐变、睡着时点屏幕叫醒、过滤滑动、Home 重启前提示、按 VBUS 判断外部供电并记录供电日志（含 INA226 电池电流）、插 USB 时不进省电、记录复位原因、崩溃转储。等待真机验证。 |
 | B-018 | 官方 bug：做完网络测试再进 AI Agent → 重启进入 App 配置页 | todo | 2026-10-21 遇到（[开发日志](devlog/2026-10-21.zh-CN.md)）。「设置 → 网络测试」会直接通过 `WifiManager` 打开并连上 Wi-Fi，退出后不关闭。不重启就进 AI Agent 时，`WifiBoard::TryWifiConnect()` 等待一个早已发生过的 `Connected` 事件 → 60 秒超时 → `StartWifiConfigMode()` → `requestAppSetup()` → 重启进入 APP SETUP 页面。不会丢失任何数据（绑定、`is_configed`、Wi-Fi 密码都在），复位即可恢复。修复思路：在 `TryWifiConnect()` 里把已连接的情况直接当作连接成功（fork 补丁），或者在测试页面关闭时关掉 Wi-Fi。临时办法：做完网络测试先重启。可以考虑给官方提 issue。 |
 

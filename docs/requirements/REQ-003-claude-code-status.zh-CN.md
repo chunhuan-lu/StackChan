@@ -117,6 +117,15 @@ ack（设备 → 电脑）：`{"t":"ack","id":N,"ok":true,"st":"idle|talk|other"
 
 过期：设备 30 秒内没收到任何有效帧，就清空会话（后台程序停了或拔了线）。
 
+### 协议 v1.1 新增（向后兼容，接收方忽略不认识的字段）
+
+- `state.sessions[i].act`（可选）：正在干活的会话此刻在做什么：`think`（收到任务、还没用工具）、`edit`
+  （Edit/Write/NotebookEdit）、`run`（Bash 和其他工具）、`read`（Read/Grep/Glob）、`web`（WebSearch/WebFetch）、
+  `test`（测试或编译命令，或 `sc-run`）、`agents`（子代理在跑）。空闲、等你、完成、出错时不带或为空。
+- `state.sessions[i].ctx`（可选，0–100）：状态栏脚本上报的上下文用量。
+- `event.ev` 新增 `pass`：测试或编译命令成功；`text` 带结果，比如 `StackChan: 42 passed`。
+  `fail` 现在只用于测试和编译命令（其他命令失败一律忽略）；知道数量时 text 带上，比如 `StackChan: 3 failed`。
+
 ## 事件对应
 
 | Claude Code | 机器人 | 气泡 |
@@ -156,7 +165,8 @@ LED 布局：最多 5 个会话，每个会话一颗灯，左边（1–5）和�
   忙着（被拿着、倾斜、头被摸、正在做别的反应）时只显示气泡。
 - LED 颜色考虑了 PY32 驱动的 RGB565 精度（很暗的非零通道会抬到第一档）。
 - 与设计的差异：对话期间待机行为不存在，所以会话灯是熄灭的；事件会等待（最长 30 秒），对话结束后再显示。
-- 第一期没做：子代理转圈、上下文用量表情（需要状态栏脚本的包装）。
+- 协议 v1.1（2026-10-21 当天）：`act` 驱动 REQ-005 的表情（干活、思考、搜网页时好奇），子代理在跑时会话灯变青色并加快呼吸，
+  `ctx` 超过 80% 时偶尔出现的表情里多半是"吃撑了"，`pass` 显示"完成啦"和结果。Claude 相关反应改用 FaceArt 表情，不再用情绪。
 
 电脑端（`tools/sc-agent/`，见其 README）：
 - 忽略 `idle_prompt` 通知（Claude Code 每次回答结束约 60 秒后都会发一次，照单全收会让机器人每次都再叫一遍）；
@@ -164,7 +174,11 @@ LED 布局：最多 5 个会话，每个会话一颗灯，左边（1–5）和�
 - 任何已映射的事件都会重新创建未知的会话（后台程序重启或 30 分钟过期后也能恢复）；已结束的会话在 60 秒内忽略迟到的异步 hook。
 - 只有 2 秒没有通信时才发 ping；重试后仍收不到 ack 就当作连接断开（重新 hello，再发一次状态）。
 - `/release` 30 分钟后自动重新接管串口（`release_timeout_s`，设为 0 则一直等 `/acquire`）。
-- `merge_hooks.py` 把 hook 配置合并进 settings.json（会写一个 `.bak` 备份）。
+- `merge_hooks.py` 把 hook 配置合并进 settings.json（会写一个 `.bak` 备份）；`--statusline` 在没有配置状态栏时安装
+  `sc_statusline.py`（显示模型、上下文百分比、花费，并上报上下文用量）。
+- v1.1：PreToolUse / SubagentStart / SubagentStop hook 设置 `act`；`results.py` 识别测试和编译命令，解析 pytest、unittest、
+  ctest、jest/vitest、cargo、go 和 idf.py 的结果（`pass` / `fail` 带数量）；其他命令失败不再有反应；`sc-run <命令>`
+  播报在 Claude Code 之外运行的命令。
 
 ## 待定
 
