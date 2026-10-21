@@ -34,6 +34,7 @@ fork 新增的功能（待机导演、表情、睡眠屏幕、Claude Code 联动
 |---|---|---|---|---|
 | `activity` | Activity | Off / Low / Medium / High | 官方设置 | `SC_IDLE_DIRECTOR` |
 | `head_moves` | Head moves / hour | 0–120（5） | `SC_IDLE_HEAD_MOVES_PER_HOUR` 20 | `SC_IDLE_DIRECTOR` |
+| `sleep` | Sleeping | 开 / 关 | 开 | `SC_IDLE_DIRECTOR`（关：从不睡觉，REQ-008） |
 | `wake_hour` | Wake up at | 0–23 点 | `SC_IDLE_WAKE_HOUR` 8 | `SC_IDLE_DIRECTOR` |
 | `sleep_hour` | Go to sleep at | 0–23 点 | `SC_IDLE_SLEEP_HOUR` 23 | `SC_IDLE_DIRECTOR` |
 | `dark_lux` | Dark below | 0–100 lux | `SC_IDLE_DARK_LUX` 3 | `SC_IDLE_DIRECTOR` |
@@ -53,6 +54,10 @@ fork 新增的功能（待机导演、表情、睡眠屏幕、Claude Code 联动
 | `suit_head` | Head moves along | 开 / 关 | `SC_CLAUDE_SUIT_HEAD` y | 同上 |
 | `suit_head_spd` | Head speed | 100–1000（50） | `SC_CLAUDE_SUIT_HEAD_SPEED` 600 | 同上 |
 | `usb_awake` | No standby on USB | 开 / 关 | 开 | `SC_EXT_POWER_NO_STANDBY` |
+| `face_track` | Look at faces | 开 / 关 | 开 | `SC_FACE_PROBE`（[REQ-008](REQ-008-face-tracking.zh-CN.md)） |
+| `face_head` | Turn head to faces | 开 / 关 | 开 | 同上 |
+| `face_box` | Show face box | 开 / 关 | 关 | 同上 |
+| `face_probe` | Face checks / s | 0–4 | 1 | 同上 |
 
 成对的设置保持一致：「Light above」始终高于「Dark below」，「Special face, to」不会小于「from」（开机时保存的值和新的
 Kconfig 默认值对不上时也会纠正）。关掉 `faces` 恢复豆豆眼和原来的

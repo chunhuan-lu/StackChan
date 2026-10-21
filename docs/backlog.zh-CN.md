@@ -35,7 +35,7 @@
 | B-010 | Claude Code 状态机器人 | doing | 第一期（USB 通道、Claude 层、`tools/sc-agent`、hook）已在 `feat/claude-link` 分支实现，等待真机验证。[REQ-003](requirements/REQ-003-claude-code-status.zh-CN.md)：Claude Code hook → sc-agent（Windows 上的 Python，WSL 里的会话也走它）→ 通过 USB 通道连机器人；第二期经 NAS 上的 Mosquitto 中转（静态 IP、自签 CA）；第三期通过小智 MCP 接入点语音问进度。按项目或会话选择接入；永远不能批准授权请求。 |
 | B-011 | 待机行为（第一批） | doing | 由心情驱动的行为调度器：08–23 点作息、天黑睡觉、摸头/拿起/倾斜反应、只动屏幕的小动作、心情灯；静音且安静。已在 `feat/idle-behavior` 分支实现；2026-10-20 第一次真机测试，之后做了调整（触摸静默期、照度阈值、墨尔本时区）。其余验收测试待做。见 [REQ-002](requirements/REQ-002-idle-behaviour.zh-CN.md)。 |
 | B-017 | 待机行为（第二批） | todo | 敲桌子检测、跟着音乐点头（需要从小智拿麦克风音量）、倾斜时头部保持水平（IMU 坐标轴已标定：重力在 +Y，俯仰绕 X 轴）、内心状态持久化。 |
-| B-012 | 设备端人脸检测与跟踪 | todo | ESP-DL `human_face_detect`；缓冲区和任务栈放在 PSRAM；对话时暂停；先做原型验证内存和帧率。 |
+| B-012 | 设备端人脸检测与跟踪 | doing | [REQ-008](requirements/REQ-008-face-tracking.zh-CN.md)，在 `feat/face-track` 分支：待机时在 core 1 运行 ESP-DL `human_face_detect` 0.4（esp-dl 内核改名，避开 esp-sr 里的同名版本）；麦克风缓冲，检测不再让唤醒词丢音；眼睛和头跟着人脸、打招呼、防跑偏；设置 `face_track`、`face_head`、`face_box`、`face_probe`，另加 `sleep`；USB 链路 `set` / `head`（协议 v1.3）。检测已在真机验证，跟踪已烧录，待用真人脸观察。 |
 | B-013 | 识别桌面物品 | todo | NAS 上用 YOLO（OpenVINO）加反应规则；只在遇到新的或认不出的物品时才调用小型多模态模型。 |
 | B-014 | 更多开始和结束对话的方式 | todo | 摸头、轻拍或摇晃（IMU）、语音退出工具、离线命令词（依赖 B-001）。 |
 | B-015 | 评估小智 v2.5.x | todo | 参考 artrobin-cn 的分支 `public/work-secretary-v2.5`；该分支为了让唤醒词能用而关闭了回声消除，这个问题要先解决。 |

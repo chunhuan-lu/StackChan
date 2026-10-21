@@ -36,6 +36,7 @@ Only settings whose feature is compiled in are listed.
 |---|---|---|---|---|
 | `activity` | Activity | Off / Low / Medium / High | upstream setting | `SC_IDLE_DIRECTOR` |
 | `head_moves` | Head moves / hour | 0–120 (5) | `SC_IDLE_HEAD_MOVES_PER_HOUR` 20 | `SC_IDLE_DIRECTOR` |
+| `sleep` | Sleeping | on / off | on | `SC_IDLE_DIRECTOR` (off: never sleeps, REQ-008) |
 | `wake_hour` | Wake up at | 0–23 :00 | `SC_IDLE_WAKE_HOUR` 8 | `SC_IDLE_DIRECTOR` |
 | `sleep_hour` | Go to sleep at | 0–23 :00 | `SC_IDLE_SLEEP_HOUR` 23 | `SC_IDLE_DIRECTOR` |
 | `dark_lux` | Dark below | 0–100 lux | `SC_IDLE_DARK_LUX` 3 | `SC_IDLE_DIRECTOR` |
@@ -55,6 +56,10 @@ Only settings whose feature is compiled in are listed.
 | `suit_head` | Head moves along | on / off | `SC_CLAUDE_SUIT_HEAD` y | same |
 | `suit_head_spd` | Head speed | 100–1000 (50) | `SC_CLAUDE_SUIT_HEAD_SPEED` 600 | same |
 | `usb_awake` | No standby on USB | on / off | on | `SC_EXT_POWER_NO_STANDBY` |
+| `face_track` | Look at faces | on / off | on | `SC_FACE_PROBE` ([REQ-008](REQ-008-face-tracking.md)) |
+| `face_head` | Turn head to faces | on / off | on | same |
+| `face_box` | Show face box | on / off | off | same |
+| `face_probe` | Face checks / s | 0–4 | 1 | same |
 
 Pairs stay consistent: "light above" is kept above "dark below", and "special face, to" is never below "from" (also
 when stored values and new Kconfig defaults disagree at boot).
