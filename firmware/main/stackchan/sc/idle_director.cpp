@@ -5,6 +5,7 @@
  */
 #include "idle_director.h"
 #include "../avatar/decorators/decorators.h"
+#include "../avatar/skins/default/default.h"
 #include "../utils/random.h"
 #include "application.h"
 #include <assets/lang_config.h>
@@ -34,6 +35,10 @@ static constexpr uint32_t kBrightHoldMs     = 5 * 1000;    // light needed befor
 static constexpr uint32_t kNapMs            = 10 * 60 * 1000;
 static constexpr uint32_t kStrokeRestoreMs  = 3600;        // HeadPetModifier restores after 3000 ms
 static constexpr uint32_t kBacklightDarkMs  = 10 * 1000;   // darkness needed before dimming a sleeping face
+static constexpr uint32_t kFaceHoldMs       = 3000;        // shortest time a face stays (no flicker)
+static constexpr uint32_t kClaudeFaceMs     = 250;         // how often the Claude face is re-evaluated
+static constexpr uint32_t kDoneFaceMs       = 20 * 1000;   // a finished session shows the "done" face this long
+static constexpr uint32_t kErrFaceMs        = 60 * 1000;
 
 // Touch
 static constexpr uint32_t kTapMaxMs       = 450;
@@ -153,6 +158,7 @@ IdleDirectorModifier::~IdleDirectorModifier()
 
     if (_sc && _sc->hasAvatar()) {
         auto& av = _sc->avatar();
+        _face.clear(av);  // conversations use the default features (the speaking mouth)
         if (_anim) {
             _anim->end(av);
             _anim.reset();
@@ -213,8 +219,9 @@ void IdleDirectorModifier::_update(Modifiable& sc)
         if (mood.headTokens < 0) {
             mood.headTokens = 1.0f;
         }
-        _next_glance = now + rnd(4000, 9000);
-        _next_action = now + rnd(30000, 60000);
+        _next_glance    = now + rnd(4000, 9000);
+        _next_action    = now + rnd(30000, 60000);
+        _next_idle_face = now + rnd(120000, 300000);
         poll_clock(now);
         mclog::tagInfo(_tag, "started: activity {}, {} head moves/h, sleep {}:00-{}:00", _activity,
                        head_moves_per_hour(_activity), CONFIG_SC_IDLE_SLEEP_HOUR, CONFIG_SC_IDLE_WAKE_HOUR);
@@ -283,6 +290,7 @@ void IdleDirectorModifier::_update(Modifiable& sc)
         _bl_target = sleep_backlight();  // follows the room light while asleep
     }
     update_backlight(now);
+    update_face(sc, now);
 
     if (now >= _next_led) {
         _next_led = now + kLedIntervalMs;
@@ -434,6 +442,8 @@ void IdleDirectorModifier::on_shake(Modifiable& sc, uint32_t now)
     mclog::tagInfo(_tag, "shaken");
     note_interaction(now);
     stop_anim(sc);
+    _face.clear(sc.avatar());  // ImuEventModifier hides and restores the default eyes itself
+    _temp_face = FaceStyle::None;
     if (_phase == Phase::Sleeping) {
         leave_sleep_pose(sc);
         _phase       = Phase::Awake;
@@ -766,6 +776,8 @@ void IdleDirectorModifier::begin_doze(Modifiable& sc, uint32_t now, SleepReason 
 void IdleDirectorModifier::apply_sleep_pose(Modifiable& sc, uint32_t now)
 {
     auto& av = sc.avatar();
+    _face.clear(av);  // the sleep pose uses the default eyes and their eyelids
+    _temp_face = FaceStyle::None;
     av.setEmotion(avatar::Emotion::Sleepy);
     av.leftEye().setWeight(kSleepEyes);
     av.rightEye().setWeight(kSleepEyes);
@@ -851,13 +863,13 @@ void IdleDirectorModifier::update_awake(Modifiable& sc, uint32_t now)
     if (_afterglow_at && now >= _afterglow_at) {
         _afterglow_at = 0;
         mclog::tagInfo(_tag, "stroke afterglow");
-        play_keys(sc, anim::contentSquint(), AnimPurpose::Reaction, now);
+        show_temp_face(sc, FaceStyle::Blush, 5000, now);
         set_led_fx(LedFx::Heartbeat, 24, 4, 10, 5000, now);
         return;
     }
 
-    if (_anim) {
-        return;
+    if (_anim || !_face.allowsGlances()) {
+        return;  // a special or Claude face owns the eyes
     }
 
     if (_held) {
@@ -977,7 +989,7 @@ void IdleDirectorModifier::run_behavior(Modifiable& sc, uint32_t now)
             play_keys(sc, anim::yawn(), AnimPurpose::Idle, now);
             break;
         case kSideEye:
-            play_keys(sc, anim::sideEyeAtLight(rnd(0, 1) == 0), AnimPurpose::Idle, now);
+            show_temp_face(sc, FaceStyle::Peek, 3500, now);
             break;
         case kSigh:
             play_keys(sc, anim::sigh(), AnimPurpose::Idle, now);
@@ -992,7 +1004,7 @@ void IdleDirectorModifier::run_behavior(Modifiable& sc, uint32_t now)
             play_keys(sc, anim::hiccup(), AnimPurpose::Idle, now);
             break;
         case kHum:
-            play_keys(sc, anim::silentHum(), AnimPurpose::Idle, now);
+            show_temp_face(sc, FaceStyle::Hum, 6000, now);
             break;
         case kNodOff: {
             // Eyes droop, the head dips a little, then jerks awake.
@@ -1045,6 +1057,12 @@ void IdleDirectorModifier::play(Modifiable& sc, std::unique_ptr<FaceAnimation> a
                                 uint32_t now)
 {
     stop_anim(sc);
+    // Animations work on the default features: drop a face they would fight with before they capture
+    // their base values. Eye-only idle animations (glances) may run on top of a face that keeps the eyes.
+    if (anim->touchesMouth() || purpose != AnimPurpose::Idle || !_face.allowsGlances()) {
+        _face.clear(sc.avatar());
+        _temp_face = FaceStyle::None;
+    }
     _anim         = std::move(anim);
     _anim_purpose = purpose;
     sync_lock(sc);
@@ -1102,7 +1120,7 @@ void IdleDirectorModifier::show_bubble(Modifiable& sc, const char* text, uint32_
 void IdleDirectorModifier::sync_lock(Modifiable& sc)
 {
     auto& av           = sc.avatar();
-    const bool desired = _anim != nullptr || _sleep_pose;
+    const bool desired = _anim != nullptr || _sleep_pose || _face.holdsEyes();
     if (desired && !av.isModifyLocked()) {
         av.setModifyLock(true);
         _locked_by_us = true;
@@ -1196,7 +1214,7 @@ void IdleDirectorModifier::write_led(uint8_t r, uint8_t g, uint8_t b)
 
 void IdleDirectorModifier::on_claude_event(Modifiable& sc, const ClaudeEvent& event, uint32_t now)
 {
-    static constexpr const char* kNames[] = {"needs", "done", "fail", "err", "compact"};
+    static constexpr const char* kNames[] = {"needs", "done", "fail", "err", "compact", "pass"};
     mclog::tagInfo(_tag, "claude {} (slot {})", kNames[static_cast<int>(event.ev)], event.slot);
 
     if (event.ev == ClaudeEv::Fail) {
@@ -1233,9 +1251,16 @@ void IdleDirectorModifier::on_claude_event(Modifiable& sc, const ClaudeEvent& ev
         stop_anim(sc);
     }
 
+    auto nod = [&]() {
+        if (try_head_move(sc, now, INT32_MIN, kAwakePitch - 60, kSlowSpeed * 2, true)) {
+            _pending_move_at = now + 700;
+            _pending_pitch   = kAwakePitch;
+            _pending_speed   = kSlowSpeed * 2;
+        }
+    };
     switch (event.ev) {
         case ClaudeEv::Needs:
-            set_emotion_for(sc, avatar::Emotion::Doubt, 4000, now);
+            show_temp_face(sc, FaceStyle::Needs, 8000, now);
             show_bubble(sc, event.text, 8000, now);
             if (try_head_move(sc, now, INT32_MIN, kAwakePitch + 120, kSlowSpeed * 2, true)) {
                 _pending_move_at = now + 2500;  // look up at the user, then settle
@@ -1244,27 +1269,197 @@ void IdleDirectorModifier::on_claude_event(Modifiable& sc, const ClaudeEvent& ev
             }
             break;
         case ClaudeEv::Done:
-            set_emotion_for(sc, avatar::Emotion::Happy, 2500, now);
+            show_temp_face(sc, FaceStyle::Done, 5000, now);
             show_bubble(sc, event.text, 4000, now);
-            if (try_head_move(sc, now, INT32_MIN, kAwakePitch - 60, kSlowSpeed * 2, true)) {
-                _pending_move_at = now + 700;  // a small nod
-                _pending_pitch   = kAwakePitch;
-                _pending_speed   = kSlowSpeed * 2;
-            }
+            nod();
+            break;
+        case ClaudeEv::Pass:
+            show_temp_face(sc, FaceStyle::Done, 4000, now);
+            show_bubble(sc, event.text, 4000, now);
+            nod();
             break;
         case ClaudeEv::Fail:
-            sc.avatar().addDecorator(std::make_unique<avatar::SweatDecorator>(lv_screen_active(), 1500, 700));
-            show_bubble(sc, event.text, 3000, now);
+            show_temp_face(sc, FaceStyle::Fail, 4000, now);
+            show_bubble(sc, event.text, 4000, now);
             break;
         case ClaudeEv::Err:
-            set_emotion_for(sc, avatar::Emotion::Sad, 3000, now);
+            show_temp_face(sc, FaceStyle::Err, 5000, now);
             show_bubble(sc, event.text, 5000, now);
             break;
         case ClaudeEv::Compact:
-            play_keys(sc, anim::yawn(), AnimPurpose::Reaction, now);
+            show_temp_face(sc, FaceStyle::Compact, 4000, now);
             show_bubble(sc, event.text, 4000, now);
             break;
     }
+}
+
+/* ---------------------------------------------------------------------------------------------- */
+/*                                              Faces                                             */
+/* ---------------------------------------------------------------------------------------------- */
+
+// The avatar in AI Agent mode is always the DefaultAvatar created by StackChanAvatarDisplay::SetupUI.
+static lv_obj_t* avatar_panel(Modifiable& sc)
+{
+    auto* panel = static_cast<avatar::DefaultAvatar&>(sc.avatar()).getPanel();
+    return panel ? panel->get() : nullptr;
+}
+
+void IdleDirectorModifier::show_temp_face(Modifiable& sc, FaceStyle style, uint32_t durationMs, uint32_t now)
+{
+    if (_phase != Phase::Awake) {
+        return;
+    }
+    if (_anim) {
+        stop_anim(sc);
+    }
+    _emotion_restore_at = 0;
+    sc.avatar().setEmotion(avatar::Emotion::Neutral);
+    _temp_face       = style;
+    _temp_face_until = now + durationMs;
+    _face.set(sc.avatar(), avatar_panel(sc), style, now);
+    _face_since = now;
+    mclog::tagInfo(_tag, "face: {} ({} ms)", face_style_name(style), durationMs);
+}
+
+FaceStyle IdleDirectorModifier::claude_face(uint32_t now)
+{
+    if (now < _next_claude_face) {
+        return _claude_face;
+    }
+    _next_claude_face = now + kClaudeFaceMs;
+    _claude_face      = FaceStyle::None;
+    _claude_full      = false;
+
+    ClaudeStatus::Sessions sessions;
+    if (!GetClaudeStatus().snapshot(sessions, now)) {
+        return _claude_face;
+    }
+    // Priority: a waiting session, then any working one (the latest started), then a recent result.
+    const ClaudeSession* working = nullptr;
+    const ClaudeSession* latest  = nullptr;
+    bool waiting                 = false;
+    for (const auto& s : sessions) {
+        if (!s.used) {
+            continue;
+        }
+        _claude_full = _claude_full || s.ctx >= 80;
+        waiting      = waiting || s.st == ClaudeSt::Wait;
+        if (s.st == ClaudeSt::Work && (!working || age_ms(s.stSinceMs, working->stSinceMs) > 0)) {
+            working = &s;
+        }
+        if (!latest || age_ms(s.stSinceMs, latest->stSinceMs) > 0) {
+            latest = &s;
+        }
+    }
+    if (is_night()) {
+        return _claude_face;  // night: the LEDs only
+    }
+    if (waiting) {
+        _claude_face = FaceStyle::Needs;
+    } else if (working) {
+        switch (working->act) {
+            case ClaudeAct::Think:
+            case ClaudeAct::Agents:
+                _claude_face = FaceStyle::Think;
+                break;
+            case ClaudeAct::Web:
+                _claude_face = FaceStyle::Curious;  // looking around the web
+                break;
+            default:
+                _claude_face = FaceStyle::Work;
+                break;
+        }
+    } else if (latest && latest->st == ClaudeSt::Done &&
+               age_ms(now, latest->stSinceMs) < static_cast<int32_t>(kDoneFaceMs)) {
+        _claude_face = FaceStyle::Done;
+    } else if (latest && latest->st == ClaudeSt::Err &&
+               age_ms(now, latest->stSinceMs) < static_cast<int32_t>(kErrFaceMs)) {
+        _claude_face = FaceStyle::Err;
+    }
+    return _claude_face;
+}
+
+FaceStyle IdleDirectorModifier::pick_idle_face() const
+{
+    const auto& m = GetIdleMood();
+    struct Option {
+        FaceStyle style;
+        float weight;
+    } options[] = {
+        {FaceStyle::Sparkle, 1.0f + (m.energy > 0.8f ? 2.0f : 0.0f)},
+        {FaceStyle::Joy, 1.0f + (m.valence > 0.65f ? 2.0f : 0.0f)},
+        {FaceStyle::Blush, 0.5f + (m.affection > 0.5f ? 2.0f : 0.0f)},
+        {FaceStyle::Curious, 1.0f + (m.boredom > 0.4f ? 2.0f : 0.0f)},
+        {FaceStyle::Wink, 0.7f},
+        {FaceStyle::Hum, m.valence > 0.5f ? 1.0f : 0.3f},
+        {FaceStyle::Peek, 1.0f},
+        {FaceStyle::Full, _claude_full && !is_night() ? 3.0f : 0.0f},  // a session's context is nearly full
+    };
+    float total = 0.0f;
+    for (auto& o : options) {
+        if (o.style == _last_idle_face) {
+            o.weight = 0.0f;
+        }
+        total += o.weight;
+    }
+    float pick = rndf(0.0f, total);
+    for (const auto& o : options) {
+        if (pick < o.weight) {
+            return o.style;
+        }
+        pick -= o.weight;
+    }
+    return FaceStyle::SoftSmile;
+}
+
+void IdleDirectorModifier::update_face(Modifiable& sc, uint32_t now)
+{
+    auto& av = sc.avatar();
+    // Faces are for the awake robot. Reactions, mouth animations and emotion overrides use the default
+    // features meanwhile; eye-only idle animations (glances) run on top of a face that keeps the eyes.
+    const bool anim_owns =
+        _anim && (_anim->touchesMouth() || _anim_purpose != AnimPurpose::Idle || !_face.allowsGlances());
+    // _paused_until covers the shake and tap reactions, which other modifiers draw on the default features.
+    if (_phase != Phase::Awake || _sleep_pose || anim_owns || _held || _tilted || _emotion_restore_at ||
+        now < _paused_until) {
+        if (_face.style() != FaceStyle::None) {
+            _face.clear(av);
+            _temp_face = FaceStyle::None;
+        }
+        return;
+    }
+
+    FaceStyle desired = FaceStyle::SoftSmile;
+    if (_temp_face != FaceStyle::None && now < _temp_face_until) {
+        desired = _temp_face;
+    } else {
+        _temp_face            = FaceStyle::None;
+        const FaceStyle claude = claude_face(now);
+        if (claude != FaceStyle::None) {
+            desired = claude;
+        } else if (now >= _next_idle_face && !_anim && !_touching) {
+            // Now and then a special face for a few seconds; mostly the soft smile.
+            _next_idle_face = now + rnd(240000, 600000);
+            _last_idle_face = pick_idle_face();
+            show_temp_face(sc, _last_idle_face, rnd(5000, 8000), now);
+            return;
+        }
+    }
+
+    if (desired != _face.style()) {
+        // Hold each face a moment so quick activity changes do not flicker; a call for the user never waits.
+        if (_face.style() != FaceStyle::None && desired != FaceStyle::Needs &&
+            age_ms(now, _face_since) < static_cast<int32_t>(kFaceHoldMs)) {
+            _face.update(av, now);
+            return;
+        }
+        if (_anim) {
+            stop_anim(sc);  // an eye animation captured the old face's sizes and offsets: end it first
+        }
+        _face.set(av, avatar_panel(sc), desired, now);
+        _face_since = now;
+    }
+    _face.update(av, now);
 }
 
 bool IdleDirectorModifier::update_claude_led(uint32_t now)
@@ -1298,11 +1493,15 @@ bool IdleDirectorModifier::update_claude_led(uint32_t now)
                 case ClaudeSt::Idle:
                     set(8, 8, 8);
                     break;
-                case ClaudeSt::Work: {
-                    const float k = 0.55f + 0.45f * std::sin(t * 3.14f);  // 2 s breathing
-                    set(0, 0, 22 * k);
+                case ClaudeSt::Work:
+                    if (s.act == ClaudeAct::Agents) {
+                        const float k = 0.55f + 0.45f * std::sin(t * 6.28f);  // subagents: faster, cyan
+                        set(0, 14 * k, 18 * k);
+                    } else {
+                        const float k = 0.55f + 0.45f * std::sin(t * 3.14f);  // 2 s breathing
+                        set(0, 0, 22 * k);
+                    }
                     break;
-                }
                 case ClaudeSt::Wait:
                     std::fmod(t, 1.0f) < 0.5f ? set(24, 12, 0) : set(3, 1, 0);  // needs the user
                     break;

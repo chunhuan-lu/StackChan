@@ -19,11 +19,15 @@ namespace stackchan::sc {
  * differences (a writer stamp may be newer than the reader's cached "now").
  */
 enum class ClaudeSt : uint8_t { Idle, Work, Wait, Done, Err };
-enum class ClaudeEv : uint8_t { Needs, Done, Fail, Err, Compact };
+enum class ClaudeEv : uint8_t { Needs, Done, Fail, Err, Compact, Pass };
+// Protocol v1.1: what a working session is doing right now.
+enum class ClaudeAct : uint8_t { None, Think, Edit, Run, Read, Web, Test, Agents };
 
 struct ClaudeSession {
     bool used          = false;
     ClaudeSt st        = ClaudeSt::Idle;
+    ClaudeAct act      = ClaudeAct::None;
+    uint8_t ctx        = 0;   // context window usage in percent (0 = unknown)
     char name[52]      = {};  // UTF-8, at most 12 code points
     uint32_t stSinceMs = 0;   // when st last changed
 };

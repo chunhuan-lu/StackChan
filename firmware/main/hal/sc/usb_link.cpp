@@ -26,6 +26,7 @@
 
 namespace sc::usb_link {
 
+using stackchan::sc::ClaudeAct;
 using stackchan::sc::ClaudeEv;
 using stackchan::sc::ClaudeEvent;
 using stackchan::sc::ClaudeSt;
@@ -116,13 +117,29 @@ static bool parse_st(const char* s, ClaudeSt& st)
     return false;
 }
 
+static ClaudeAct parse_act(const char* s)
+{
+    static constexpr struct {
+        const char* name;
+        ClaudeAct act;
+    } kMap[] = {{"think", ClaudeAct::Think}, {"edit", ClaudeAct::Edit}, {"run", ClaudeAct::Run},
+                {"read", ClaudeAct::Read},   {"web", ClaudeAct::Web},   {"test", ClaudeAct::Test},
+                {"agents", ClaudeAct::Agents}};
+    for (const auto& m : kMap) {
+        if (std::strcmp(s, m.name) == 0) {
+            return m.act;
+        }
+    }
+    return ClaudeAct::None;  // absent, empty or unknown
+}
+
 static bool parse_ev(const char* s, ClaudeEv& ev)
 {
     static constexpr struct {
         const char* name;
         ClaudeEv ev;
-    } kMap[] = {{"needs", ClaudeEv::Needs}, {"done", ClaudeEv::Done}, {"fail", ClaudeEv::Fail},
-                {"err", ClaudeEv::Err},     {"compact", ClaudeEv::Compact}};
+    } kMap[] = {{"needs", ClaudeEv::Needs}, {"done", ClaudeEv::Done},       {"fail", ClaudeEv::Fail},
+                {"err", ClaudeEv::Err},     {"compact", ClaudeEv::Compact}, {"pass", ClaudeEv::Pass}};
     for (const auto& m : kMap) {
         if (std::strcmp(s, m.name) == 0) {
             ev = m.ev;
@@ -198,6 +215,8 @@ static const char* handle_state(const ArduinoJson::JsonDocument& doc, uint32_t n
         auto& out = sessions[slot];
         out.used  = true;
         out.st    = st;
+        out.act   = parse_act(s["act"] | "");
+        out.ctx   = static_cast<uint8_t>(std::clamp(s["ctx"] | 0, 0, 100));
         copy_utf8(out.name, sizeof(out.name), s["name"] | "", kNameChars);
         const int w = snprintf(summary + used, sizeof(summary) - used, "[%d %s %s]", slot, out.name, s["st"] | "");
         used        = w > 0 ? std::min(sizeof(summary) - 1, used + static_cast<size_t>(w)) : used;

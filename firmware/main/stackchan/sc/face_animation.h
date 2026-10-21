@@ -26,6 +26,11 @@ public:
     virtual bool step(avatar::Avatar& avatar, uint32_t now) = 0;
     // Abort early and restore the base state.
     virtual void end(avatar::Avatar& avatar) = 0;
+    // False for eye-only animations, which can play on top of a FaceArt style that keeps the default eyes.
+    virtual bool touchesMouth() const
+    {
+        return true;
+    }
 };
 
 /**
@@ -103,6 +108,15 @@ public:
     void begin(avatar::Avatar& avatar, uint32_t now) override;
     bool step(avatar::Avatar& avatar, uint32_t now) override;
     void end(avatar::Avatar& avatar) override;
+    bool touchesMouth() const override
+    {
+        for (const auto& k : _keys) {  // a bob moves the default mouth too
+            if (k.mouth != FaceKey::kBase || k.mouthRot != FaceKey::kBase || k.bobY != 0) {
+                return true;
+            }
+        }
+        return false;
+    }
 
 private:
     struct Base {
@@ -133,6 +147,10 @@ public:
     void begin(avatar::Avatar& avatar, uint32_t now) override;
     bool step(avatar::Avatar& avatar, uint32_t now) override;
     void end(avatar::Avatar& avatar) override;
+    bool touchesMouth() const override
+    {
+        return false;
+    }
 
 private:
     void set_look(avatar::Avatar& avatar, int x, int y);

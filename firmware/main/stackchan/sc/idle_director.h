@@ -7,6 +7,7 @@
 #include "../modifiable.h"
 #include "claude_status.h"
 #include "face_animation.h"
+#include "face_art.h"
 #include <hal/hal.h>
 #include <array>
 #include <atomic>
@@ -121,6 +122,12 @@ private:
     // Claude Code status (REQ-003): session LEDs and event reactions
     void on_claude_event(Modifiable& sc, const ClaudeEvent& event, uint32_t now);
     bool update_claude_led(uint32_t now);
+
+    // Faces (FaceArt): soft smile while awake, occasional special faces, Claude Code faces
+    void update_face(Modifiable& sc, uint32_t now);
+    void show_temp_face(Modifiable& sc, FaceStyle style, uint32_t durationMs, uint32_t now);
+    FaceStyle claude_face(uint32_t now);
+    FaceStyle pick_idle_face() const;
     void restore_backlight();
     int sleep_backlight() const;
     void update_backlight(uint32_t now);
@@ -220,6 +227,17 @@ private:
     uint32_t _led_fx_until = 0;
     float _led_fx_color[3] = {0, 0, 0};
     uint32_t _next_led   = 0;
+
+    // Faces
+    FaceArt _face;
+    FaceStyle _temp_face        = FaceStyle::None;
+    uint32_t _temp_face_until   = 0;
+    uint32_t _face_since        = 0;
+    uint32_t _next_idle_face    = 0;
+    FaceStyle _last_idle_face   = FaceStyle::None;
+    FaceStyle _claude_face      = FaceStyle::None;  // cached, refreshed every kClaudeFaceMs
+    uint32_t _next_claude_face  = 0;
+    bool _claude_full           = false;  // a session's context is above 80 %
 
     // Claude Code session LEDs (slot i = LEDs 1+i and 7+i)
     static constexpr uint32_t kNoColor = UINT32_MAX;
