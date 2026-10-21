@@ -9,6 +9,10 @@
 #include <mooncake_log.h>
 #include <stackchan/stackchan.h>
 #include <cstdint>
+#include <sdkconfig.h>
+#if CONFIG_SC_USB_LINK
+#include <hal/sc/usb_link.h>  // [StackChan fork]
+#endif
 
 using namespace mooncake;
 
@@ -49,6 +53,20 @@ void AppLauncher::onLauncherRunning()
             create_launcher_view();
         }
     } else {
+#if CONFIG_SC_USB_LINK
+        // [StackChan fork] "agent" over USB (sc-flash): open the AI Agent like a tap on its icon. The
+        // screensaver is not closed by onLauncherClose, so drop it here, under the lock.
+        if (sc::usb_link::consume_agent_request()) {
+            for (const auto& app : getAppProps()) {
+                if (app.info.name == "AI.AGENT") {
+                    mclog::tagInfo(getAppInfo().name, "open AI Agent (USB request), app id: {}", app.appID);
+                    _screensaver.reset();
+                    openApp(app.appID);
+                    return;
+                }
+            }
+        }
+#endif
         _view->update();
         screensaver_update();
     }

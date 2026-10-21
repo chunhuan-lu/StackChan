@@ -20,6 +20,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <algorithm>
+#include <atomic>
 #include <cinttypes>
 #include <cstdio>
 #include <cstring>
@@ -62,6 +63,8 @@ static PsramAllocator s_allocator;
 
 static int s_tx_fd          = -1;
 static uint32_t s_boot_id   = 0;
+static std::atomic<uint32_t> s_agent_request_ms{0};  // "agent" received at (ms), handled by the launcher
+static constexpr uint32_t kAgentRequestMs = 30 * 1000;
 static bool s_have_last_id  = false;
 static uint32_t s_last_id   = 0;
 static char* s_line         = nullptr;  // PSRAM line buffer
@@ -188,6 +191,7 @@ static void send_ack(uint32_t id, const char* err, bool hello)
         doc["err"] = err;
     }
     doc["st"]   = robot_state();
+    doc["ai"]   = GetHAL().isXiaozhiStartRequested() || hal_bridge::is_xiaozhi_ready();  // AI Agent started
     doc["boot"] = s_boot_id;
     doc["n"]    = GetClaudeStatus().usedCount();
     if (hello) {
@@ -274,6 +278,13 @@ static void dispatch(const ArduinoJson::JsonDocument& doc)
     } else if (std::strcmp(type, "clear") == 0) {
         GetClaudeStatus().clear();
         s_logged_state[0] = '\0';
+    } else if (std::strcmp(type, "agent") == 0) {
+        // Never request the xiaozhi start from here: the main loop would tear mooncake down with the
+        // launcher view still on screen, without the LVGL lock (crashed on the first try).
+        if (!GetHAL().isXiaozhiStartRequested() && !hal_bridge::is_xiaozhi_ready()) {
+            ESP_LOGI(TAG, "AI Agent requested over USB");
+            s_agent_request_ms = now | 1;  // 0 = none
+        }
     } else {
         err = "type";
     }
@@ -382,6 +393,16 @@ void start()
             pdPASS) {
         ESP_LOGE(TAG, "start failed");
     }
+}
+
+bool consume_agent_request()
+{
+    const uint32_t at = s_agent_request_ms.load();
+    if (at == 0) {
+        return false;
+    }
+    s_agent_request_ms = 0;
+    return GetHAL().millis() - at < kAgentRequestMs;  // an old request (launcher was busy) is dropped
 }
 
 }  // namespace sc::usb_link

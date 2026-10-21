@@ -43,6 +43,7 @@ ROBOT_PID = 0x1001
 MAX_HOOK_BODY = 8 * 1024 * 1024  # PostToolUseFailure carries the tool input, which can be large
 MAX_LINE = 16 * 1024  # serial data without a newline beyond this is logged as one line
 EVENT_MAX_AGE = 10.0  # seconds; older robot events are dropped instead of being shown late
+COMMAND_MAX_AGE = 60.0  # seconds; a command (e.g. start the AI Agent) not sent by then is dropped
 
 log = logging.getLogger("sc.agent")
 
@@ -331,6 +332,7 @@ class UsbLink:
         self._last_state_at = 0.0
         self._last_tx_at = 0.0
         self._events: deque[tuple[float, dict[str, Any]]] = deque(maxlen=16)
+        self._commands: deque[tuple[float, dict[str, Any]]] = deque(maxlen=4)
         self._next_id = 1
         self._pending_id: int | None = None
         self._ack: dict[str, Any] | None = None
@@ -360,6 +362,12 @@ class UsbLink:
     def queue_event(self, event: dict[str, Any]) -> None:
         with self._cond:
             self._events.append((time.monotonic(), dict(event)))
+            self._cond.notify_all()
+
+    def queue_command(self, command: dict[str, Any]) -> None:
+        """A robot command such as {"t": "agent"}; sent once linked, dropped after COMMAND_MAX_AGE."""
+        with self._cond:
+            self._commands.append((time.monotonic(), dict(command)))
             self._cond.notify_all()
 
     def release(self, timeout: float = 5.0) -> tuple[bool, str | None]:
@@ -571,6 +579,8 @@ class UsbLink:
                     continue
                 while self._events and now - self._events[0][0] > EVENT_MAX_AGE:
                     log.debug("dropping stale event %s", self._events.popleft()[1].get("ev"))
+                while self._commands and now - self._commands[0][0] > COMMAND_MAX_AGE:
+                    log.warning("dropping command %s: robot not linked in time", self._commands.popleft()[1]["t"])
                 state_wanted = self._force_state or self._state_dirty
                 # A change waits state_interval before the snapshot is taken (an act that flips back meanwhile sends
                 # nothing) and states keep state_interval apart (at most 5 per second). Events go out right away,
@@ -584,6 +594,8 @@ class UsbLink:
                     continue
                 if self._events:
                     return {"t": "event", **self._events.popleft()[1]}
+                if self._commands:
+                    return self._commands.popleft()[1]
                 if now - self._last_tx_at >= timing.ping_interval:
                     return {"t": "ping"}
                 deadline = self._last_tx_at + timing.ping_interval
@@ -659,7 +671,9 @@ class UsbLink:
             if kind == "hello":
                 self._next_hello_at = now + self._timing.hello_interval
             return
-        if kind == "state":
+        if kind == "agent":
+            log.info("robot: AI Agent %s", "started" if ack.get("ai") else "start requested")
+        elif kind == "state":
             self._confirmed_count = len(msg["sessions"])
             if isinstance(ack.get("n"), int) and ack["n"] != self._confirmed_count:
                 log.warning("robot kept %s of %d sessions", ack["n"], self._confirmed_count)
@@ -768,6 +782,8 @@ class UsbLink:
             self._stats["acks"] += 1
             if isinstance(frame.get("st"), str):
                 self._robot["st"] = frame["st"]
+            if isinstance(frame.get("ai"), bool):  # firmware with the "agent" command
+                self._robot["ai"] = frame["ai"]
             if self._pending_id is not None and frame.get("id") == self._pending_id:
                 self._ack = frame
                 self._cond.notify_all()
@@ -805,7 +821,7 @@ class HookRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlsplit(self.path).path
-        if path not in ("/hook", "/release", "/acquire", "/shutdown"):
+        if path not in ("/hook", "/release", "/acquire", "/agent", "/shutdown"):
             self._send(404, {"error": "not found"})
             return
         if not self._authorized(self.headers.get("X-SC-Token")):
@@ -829,6 +845,10 @@ class HookRequestHandler(BaseHTTPRequestHandler):
             self._send(200 if ok else 503, {"ok": ok, "port": port})
         elif path == "/acquire":
             agent.link.acquire()
+            self._send(200, {"ok": True})
+        elif path == "/agent":
+            log.info("AI Agent start requested over HTTP")
+            agent.link.queue_command({"t": "agent"})
             self._send(200, {"ok": True})
         else:
             log.info("shutdown requested over HTTP")
@@ -960,6 +980,7 @@ class Agent:
             "port": link["port"],
             "serial": link["serial"],
             "robot_st": robot.get("st"),
+            "robot_ai": robot.get("ai"),
             "boot": robot.get("boot"),
             "fw": robot.get("fw"),
             "sessions": self.table.snapshot()["sessions"],

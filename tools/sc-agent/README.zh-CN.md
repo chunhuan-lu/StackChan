@@ -31,6 +31,7 @@ Claude Code（WSL 或 Windows）── 异步 hook ── sc-hook.sh ── curl
 | `setup.bat` | 创建（或修复）`.venv` 并安装 `requirements.txt`（pyserial） |
 | `start-sc-agent.bat` | 在后台（`pythonw`）启动 agent，加 `--console` 则在前台运行 |
 | `sc-idf.ps1` | 在 agent 释放 COM 口后运行 `idf.py` |
+| `sc-flash.ps1` | 一条命令：烧录、等机器人重启连上（卡住时看门狗复位）、启动 AI Agent |
 | `test_*.py` | 单元测试（只用标准库，不需要串口） |
 
 ## 安装
@@ -239,8 +240,12 @@ curl.exe -s --noproxy "*" -H "X-SC-Token: $(Get-Content $env:USERPROFILE\.sc-age
 ```
 
 `link` 的取值：`searching`（没有可用端口）、`connecting`（端口已打开，`hello` 没有应答）、`linked`、`released`。
-返回内容还包括端口及其 USB 序列号、最近一次 ack 中的机器人状态（`idle`、`talk`、`other`）、boot id 和固件版本、会话列表
-以及链路计数器（`retries`、`timeouts`、`bad_frames` 可用来判断丢帧情况）。
+返回内容还包括端口及其 USB 序列号、最近一次 ack 中的机器人状态（`idle`、`talk`、`other`）、AI Agent 是否已启动
+（`robot_ai`；REQ-006 之前的固件为 `null`）、boot id 和固件版本、会话列表以及链路计数器（`retries`、`timeouts`、
+`bad_frames` 可用来判断丢帧情况）。
+
+`POST /agent`（同样带令牌）让机器人启动 AI Agent，效果和在主菜单点它的图标一样。命令在链路连上后才发出（所以烧录期间端口
+被释放时也可以先发），60 秒内没发出就丢弃。
 
 ## 用 sc-idf.ps1 烧录
 
@@ -257,6 +262,21 @@ agent 占用着 COM 口，所以直接执行 `idf.py flash` 会报"端口被占�
 其他目标（`build`、`menuconfig` 等）直接运行 `idf.py`。agent 没有运行且没有给出 `-p` 时，`idf.py` 不带 `-p` 运行，自己查找端口。如果 PowerShell 拒绝运行脚本，执行一次
 `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`，或者用
 `powershell -ExecutionPolicy Bypass -File ..\tools\sc-agent\sc-idf.ps1 flash`。项目规定：只用 `flash`，绝不 `erase-flash`。
+
+## 烧录并启动 AI Agent：sc-flash.ps1
+
+```powershell
+..\tools\sc-agent\sc-flash.ps1                    # 先 idf.py build
+..\tools\sc-agent\sc-flash.ps1 -p COM12 -NoAgent  # 停在主菜单
+```
+
+1. `sc-idf.ps1 flash`：esptool 通过 USB-Serial/JTAG 自动让 ESP32-S3 进入 ROM 下载模式（不用按键），烧录后复位。
+2. 最多等 30 秒，直到 agent 以新的 boot id 连上。机器人停在 ROM 下载模式时（手动进的下载模式），用
+   `esptool --after watchdog_reset chip_id` 重启后再等一次。
+3. `POST /agent`，然后最多等 90 秒，直到机器人状态变成 `idle`（AI Agent 就绪）。等待期间机器人重启会报出来：官方固件给
+   Wi-Fi（包括 DHCP）60 秒，超时就重启进「App 配网」页（复位即可退出，不会丢东西）。
+
+2026-10-21 实测：烧录约 75 秒（程序和资源），重启并连上 3 秒，网络快的话再过 12 秒 AI Agent 就绪。
 
 ## 日志
 

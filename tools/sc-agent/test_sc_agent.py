@@ -39,7 +39,7 @@ class FakeWriteTimeout(Exception):
 class FakeRobot:
     """Device side of the link: parses host frames and answers like the firmware, with a log line in front.
 
-    Every ack carries "boot" and "n" (used slots) like the current firmware; legacy=True leaves them out."""
+    Every ack carries "boot", "n" (used slots) and "ai" like the current firmware; legacy=True leaves them out."""
 
     def __init__(self, port: str = "COM99", serial: str | None = "SN-99", legacy: bool = False) -> None:
         self.port, self.serial, self.legacy = port, serial, legacy
@@ -48,6 +48,7 @@ class FakeRobot:
         self.out = bytearray()
         self.boot = 1001
         self.n = 0  # sessions the robot currently holds
+        self.ai = False  # AI Agent started
         self.drop = 0  # ignore this many next frames (frame loss) ...
         self.drop_type: str | None = None  # ... of this message type only, when set
         self.silent = False  # firmware without the link: never answers
@@ -72,9 +73,11 @@ class FakeRobot:
                     self.n = len(frame["sessions"])
                 elif frame["t"] == "clear":
                     self.n = 0
+                elif frame["t"] == "agent":
+                    self.ai = True
                 ack = {"t": "ack", "id": frame["id"], "ok": True, "st": "idle"}
                 if not self.legacy:
-                    ack.update(boot=self.boot, n=self.n)
+                    ack.update(boot=self.boot, n=self.n, ai=self.ai)
                 if frame["t"] == "hello":
                     ack.update(v=1, fw="test-fw", boot=self.boot, up=5)
                 self.out += b"\x1b[0;32mI (100) robot: got " + frame["t"].encode() + b"\x1b[0m\r\n"
@@ -325,6 +328,24 @@ class AgentTest(AgentTestCase):
         self.assertEqual(self.request("POST", "/acquire", {})[0], 200)
         self.wait_linked()
         self.assertEqual(self.robot.types().count("hello"), 2)
+
+    def test_agent_command(self):
+        self.wait_linked()
+        self.assertIs(self.agent.status()["robot_ai"], False)
+        self.assertEqual(self.request("POST", "/agent", {}, token="wrong")[0], 403)
+        self.assertEqual(self.request("POST", "/agent", {}), (200, {"ok": True}))
+        self.assertTrue(wait_until(lambda: self.agent.status()["robot_ai"] is True))
+        self.assertEqual(self.robot.types().count("agent"), 1)
+
+    def test_agent_command_waits_for_link(self):
+        self.wait_linked()
+        self.request("POST", "/release", {})
+        self.assertEqual(self.request("POST", "/agent", {})[0], 200)  # e.g. sent right after flashing
+        time.sleep(0.2)
+        self.assertNotIn("agent", self.robot.types())
+        self.request("POST", "/acquire", {})
+        self.wait_linked()
+        self.assertTrue(wait_until(lambda: "agent" in self.robot.types_after_hello(2)))
 
     def test_release_without_robot(self):
         self.backend.present = False

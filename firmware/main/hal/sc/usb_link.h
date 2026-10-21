@@ -16,4 +16,12 @@ namespace sc::usb_link {
  */
 void start();
 
+/**
+ * @brief True once after the PC sent "agent" (start the AI Agent, e.g. after sc-flash), within 30 s.
+ *
+ * The launcher polls it from its own update and opens the AI Agent like a tap on its icon, so the
+ * launcher view is closed under the LVGL lock before mooncake is torn down.
+ */
+bool consume_agent_request();
+
 }  // namespace sc::usb_link

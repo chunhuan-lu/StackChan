@@ -32,6 +32,7 @@ closed again after five tries and left alone for 60 s (see "Finding the robot"),
 | `setup.bat` | Creates (or repairs) `.venv` and installs `requirements.txt` (pyserial) |
 | `start-sc-agent.bat` | Starts the agent in the background (`pythonw`), or with `--console` in the foreground |
 | `sc-idf.ps1` | Runs `idf.py` with the COM port released by the agent |
+| `sc-flash.ps1` | One command: flash, wait for the restarted robot (watchdog reset if it hangs), start the AI Agent |
 | `test_*.py` | Unit tests (stdlib only, no serial port needed) |
 
 ## Install
@@ -260,8 +261,11 @@ curl.exe -s --noproxy "*" -H "X-SC-Token: $(Get-Content $env:USERPROFILE\.sc-age
 
 `link` is `searching` (no usable port), `connecting` (port open, no answer to `hello`), `linked` or `released`.
 The answer also contains the port and its USB serial number, the robot state from the last ack (`idle`, `talk`,
-`other`), its boot id and firmware, the sessions and link counters (`retries`, `timeouts`, `bad_frames` help to
-judge frame loss).
+`other`), whether the AI Agent was started (`robot_ai`; `null` with firmware before REQ-006), its boot id and
+firmware, the sessions and link counters (`retries`, `timeouts`, `bad_frames` help to judge frame loss).
+
+`POST /agent` (same token) asks the robot to start the AI Agent, as a tap on its launcher icon would. The command is
+sent once the link is up (so it may be posted while the port is released for flashing) and dropped after 60 s.
 
 ## Flashing with sc-idf.ps1
 
@@ -281,6 +285,24 @@ script releases the port (`POST /release`), runs `idf.py -p <port> <arguments>` 
 If PowerShell refuses to run scripts, use `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, or
 `powershell -ExecutionPolicy Bypass -File ..\tools\sc-agent\sc-idf.ps1 flash`. Project rule: `flash` only, never
 `erase-flash`.
+
+## Flash and start the AI Agent: sc-flash.ps1
+
+```powershell
+..\tools\sc-agent\sc-flash.ps1                    # after idf.py build
+..\tools\sc-agent\sc-flash.ps1 -p COM12 -NoAgent  # stop at the launcher
+```
+
+1. `sc-idf.ps1 flash`: esptool puts the ESP32-S3 into the ROM download mode over USB-Serial/JTAG by itself (no
+   buttons), flashes and resets it.
+2. Waits up to 30 s for the agent to link with a new boot id. A robot left in the ROM loader (download mode entered by
+   hand) is restarted with `esptool --after watchdog_reset chip_id`, then waited for again.
+3. `POST /agent`, then waits up to 90 s for the robot state `idle` (AI Agent ready). A restart during this wait is
+   reported: upstream gives Wi-Fi 60 s including DHCP and then restarts into the App setup page (a reset gets out of
+   it; nothing is lost).
+
+Measured 2026-10-21: flash about 75 s (app and assets), restart and link 3 s, AI Agent ready 12 s later on a fast
+network.
 
 ## Logs
 
