@@ -126,6 +126,14 @@ ack（设备 → 电脑）：`{"t":"ack","id":N,"ok":true,"st":"idle|talk|other"
 - `event.ev` 新增 `pass`：测试或编译命令成功；`text` 带结果，比如 `StackChan: 42 passed`。
   `fail` 现在只用于测试和编译命令（其他命令失败一律忽略）；知道数量时 text 带上，比如 `StackChan: 3 failed`。
 
+### 协议 v1.2 新增（REQ-006 的固件，向后兼容）
+
+- 电脑 → 设备 `agent`（无字段）：启动 AI Agent，效果和在主菜单点它的图标一样。由主菜单在自己的循环里处理（必须先在
+  LVGL 锁里关闭主菜单界面，再拆掉 mooncake；第一次直接在 USB 任务里请求启动小智就崩溃了）。AI Agent 已经在运行时忽略；
+  30 秒内主菜单没有接手（开着别的应用、在配网页）的请求会被丢弃。旧固件回复 `"ok":false,"err":"type"`。
+- 每个 ack 都带 `ai`（bool）：AI Agent 已启动（已请求或正在运行）。
+- `tools/sc-agent/sc-flash.ps1` 通过 `POST /agent` 使用。
+
 ## 事件对应
 
 | Claude Code | 机器人 | 气泡 |

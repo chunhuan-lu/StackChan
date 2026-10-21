@@ -136,6 +136,16 @@ Staleness: if the device receives no valid frame for 30 s it drops the sessions 
   `fail` is now only sent for test and build commands (other failing commands are ignored); its text carries the
   counts when known, e.g. `StackChan: 3 failed`.
 
+### Protocol v1.2 additions (REQ-006 firmware, backwards compatible)
+
+- Host → device `agent` (no fields): start the AI Agent as a tap on its launcher icon would. The launcher handles it
+  in its own update (the view must be closed under the LVGL lock before mooncake is torn down; requesting the xiaozhi
+  start directly from the USB task crashed on the first try). Ignored when the AI Agent already runs; a request the
+  launcher does not pick up within 30 s (another app open, setup page) is dropped. Older firmware answers
+  `"ok":false,"err":"type"`.
+- Every ack carries `ai` (bool): the AI Agent was started (requested or running).
+- Used by `tools/sc-agent/sc-flash.ps1` through `POST /agent`.
+
 ## Event mapping
 
 | Claude Code | Robot | Bubble |

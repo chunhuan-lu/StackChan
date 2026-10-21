@@ -21,10 +21,11 @@
 | B-005 | 不要在睡眠时持有 LVGL 锁 | todo | 小智忙碌时，`_stackchan_update_task` 会拿着锁执行 `vTaskDelay(100)`（`hal.cpp`）。 |
 | B-006 | 恢复热点配网 | todo | 1.6 只允许通过 App（蓝牙）配网，而自编译固件过不了 App 的握手。目前的备用办法：用 nRF Connect 通过蓝牙发送 `setWifi`。 |
 | B-007 | 检查音频任务调度 | todo | 只在说话卡顿复发时处理：`opus_codec`（优先级 2）低于 LVGL 和 stackchan 任务（优先级 3）。 |
+| B-022 | USB 完全控制：烧录、重启、启动 AI Agent | doing | `tools/sc-agent/sc-flash.ps1`：通过 USB-Serial/JTAG 由 esptool 进入下载模式、烧录、等待新的 boot id（卡在 ROM 下载模式时看门狗复位），USB 通道命令 `agent`（协议 v1.2）让主菜单打开 AI Agent。2026-10-21 真机验证通过（复位后 15 秒 AI Agent 就绪）。见 [REQ-003](requirements/REQ-003-claude-code-status.zh-CN.md)。 |
 | B-021 | 设置面板与语音设置 | doing | [REQ-006](requirements/REQ-006-settings.zh-CN.md)，在 `feat/settings` 分支：Home 按钮旁的齿轮打开设置面板，共 15 项（活跃程度、作息、光照阈值、睡眠屏幕、灯光亮度、特殊表情间隔，以及表情 / 点击唤醒 / Claude / 插 USB 不待机 开关），保存在 NVS `sc_cfg`，立即生效；MCP 工具 `self.robot.get_settings` / `set_setting`。Kconfig 默认值改为官方行为，本 fork 的选择放在 `sdkconfig.defaults.sc`。等待真机验证。 |
 | B-020 | 更生动的表情 | doing | [REQ-005](requirements/REQ-005-faces.zh-CN.md)：FaceArt 画出 16 个矢量表情（温和微笑作为基础脸，每 4–10 分钟偶尔换一个特殊表情，Claude Code 相关表情由会话状态和事件驱动）。等待真机验证。 |
 | B-019 | 待机、供电与触摸改进 | doing | [REQ-004](requirements/REQ-004-standby-power-touch.zh-CN.md)，分支 `fix/standby-power`：睡眠亮度分暗/亮两档（5 / 45）并渐变、睡着时点屏幕叫醒、过滤滑动、Home 重启前提示、按 VBUS 判断外部供电并记录供电日志（含 INA226 电池电流）、插 USB 时不进省电、记录复位原因、崩溃转储。等待真机验证。 |
-| B-018 | 官方 bug：做完网络测试再进 AI Agent → 重启进入 App 配置页 | todo | 2026-10-21 遇到（[开发日志](devlog/2026-10-21.zh-CN.md)）。「设置 → 网络测试」会直接通过 `WifiManager` 打开并连上 Wi-Fi，退出后不关闭。不重启就进 AI Agent 时，`WifiBoard::TryWifiConnect()` 等待一个早已发生过的 `Connected` 事件 → 60 秒超时 → `StartWifiConfigMode()` → `requestAppSetup()` → 重启进入 APP SETUP 页面。不会丢失任何数据（绑定、`is_configed`、Wi-Fi 密码都在），复位即可恢复。修复思路：在 `TryWifiConnect()` 里把已连接的情况直接当作连接成功（fork 补丁），或者在测试页面关闭时关掉 Wi-Fi。临时办法：做完网络测试先重启。可以考虑给官方提 issue。 |
+| B-018 | 官方 bug：做完网络测试再进 AI Agent → 重启进入 App 配置页 | todo | 2026-10-21 遇到（[开发日志](devlog/2026-10-21.zh-CN.md)）。「设置 → 网络测试」会直接通过 `WifiManager` 打开并连上 Wi-Fi，退出后不关闭。不重启就进 AI Agent 时，`WifiBoard::TryWifiConnect()` 等待一个早已发生过的 `Connected` 事件 → 60 秒超时 → `StartWifiConfigMode()` → `requestAppSetup()` → 重启进入 APP SETUP 页面。不会丢失任何数据（绑定、`is_configed`、Wi-Fi 密码都在），复位即可恢复。修复思路：在 `TryWifiConnect()` 里把已连接的情况直接当作连接成功（fork 补丁），或者在测试页面关闭时关掉 Wi-Fi。临时办法：做完网络测试先重启。可以考虑给官方提 issue。同一个超时的第二种触发方式（2026-10-21 16:06）：DHCP 要好几分钟的网络（8 秒就关联上，60 秒还没拿到 IP；同一个路由器早些时候用了 3 分钟才给 IP）也会进 App 配网页；可选方案：已关联时多等一会儿。 |
 
 ## 以后
 
