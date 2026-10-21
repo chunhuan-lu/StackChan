@@ -135,7 +135,7 @@ private:
     void update_suit(Modifiable& sc, uint32_t now);
     bool suit_allowed() const;
     BuddyPose buddy_pose(uint32_t now);
-    void on_buddy_cue(BuddyCue cue, uint32_t now);
+    void on_buddy_cue(BuddyCue cue, int pitch_now, uint32_t now);
     void run_head_keys(Modifiable& sc, uint32_t now);
     void restore_backlight();
     int sleep_backlight() const;
@@ -260,6 +260,7 @@ private:
     BuddyPose _buddy_temp       = BuddyPose::Idle;
     uint32_t _buddy_temp_until  = 0;
     std::vector<HeadKey> _head_keys;
+    int _head_base_pitch = 0;  // where the head was when the current run of keys began
 
     // Claude Code session LEDs (slot i = LEDs 1+i and 7+i)
     static constexpr uint32_t kNoColor = UINT32_MAX;

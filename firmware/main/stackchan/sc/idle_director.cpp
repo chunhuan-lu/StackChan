@@ -1601,7 +1601,7 @@ void IdleDirectorModifier::update_suit(Modifiable& sc, uint32_t now)
         apply_suit_colors(_buddy);
         _buddy.setPose(buddy_pose(now), now);
         _buddy.update(av, now);
-        on_buddy_cue(_buddy.takeCue(), now);
+        on_buddy_cue(_buddy.takeCue(), sc.motion().getCurrentPitchAngle(), now);
         if (!_buddy.visible()) {
             mclog::tagInfo(_tag, "claude suit: off");
         }
@@ -1630,36 +1630,41 @@ BuddyPose IdleDirectorModifier::buddy_pose(uint32_t now)
     }
 }
 
-// Head movements that go with the transitions (settings "suit_head", "suit_head_spd").
-void IdleDirectorModifier::on_buddy_cue(BuddyCue cue, uint32_t now)
+// Head movements that go with the transitions (settings "suit_head", "suit_head_spd"). They are offsets from where
+// the head is and end there again: going back to kAwakePitch dropped the head (and the camera) below the user.
+void IdleDirectorModifier::on_buddy_cue(BuddyCue cue, int pitch_now, uint32_t now)
 {
     if (cue == BuddyCue::None || !ScSettings::get().enabled(SettingId::SuitHead)) {
         return;
     }
+    if (_head_keys.empty()) {  // a cue during the previous one's keys would start from a dipped or lifted head
+        _head_base_pitch = std::clamp(pitch_now, kAwakePitch, 700);
+    }
+    const int base = _head_base_pitch;
     const int fast = setting(SettingId::SuitHeadSpeed);
     const int back = std::max(60, fast / 3);
     switch (cue) {
         case BuddyCue::Dip:  // the suit lands on the head
-            _head_keys = {{now, INT32_MIN, kAwakePitch - 70, fast}, {now + 350, INT32_MIN, kAwakePitch, back}};
+            _head_keys = {{now, INT32_MIN, base - 70, fast}, {now + 350, INT32_MIN, base, back}};
             break;
         case BuddyCue::Lift:  // ta-da
-            _head_keys = {{now, INT32_MIN, kAwakePitch + 70, fast}, {now + 450, INT32_MIN, kAwakePitch, back}};
+            _head_keys = {{now, INT32_MIN, base + 70, fast}, {now + 450, INT32_MIN, base, back}};
             break;
         case BuddyCue::Recoil:  // the steam puffs out
-            _head_keys = {{now, INT32_MIN, kAwakePitch + 100, fast}, {now + 450, INT32_MIN, kAwakePitch, back}};
+            _head_keys = {{now, INT32_MIN, base + 100, fast}, {now + 450, INT32_MIN, base, back}};
             break;
         case BuddyCue::Shake:  // shaking the sweat off
-            _head_keys = {{now, 150, kAwakePitch, fast},
-                          {now + 160, -150, kAwakePitch, fast},
-                          {now + 320, 120, kAwakePitch, fast},
-                          {now + 480, -120, kAwakePitch, fast},
-                          {now + 640, 0, kAwakePitch, back}};
+            _head_keys = {{now, 150, base, fast},
+                          {now + 160, -150, base, fast},
+                          {now + 320, 120, base, fast},
+                          {now + 480, -120, base, fast},
+                          {now + 640, 0, base, back}};
             break;
         default:
             return;
     }
     static constexpr const char* kNames[] = {"none", "dip", "lift", "recoil", "shake"};
-    mclog::tagInfo(_tag, "suit head: {} (speed {})", kNames[static_cast<int>(cue)], fast);
+    mclog::tagInfo(_tag, "suit head: {} from pitch {} (speed {})", kNames[static_cast<int>(cue)], base, fast);
 }
 
 void IdleDirectorModifier::run_head_keys(Modifiable& sc, uint32_t now)
