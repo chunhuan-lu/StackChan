@@ -40,8 +40,7 @@ public:
     void show(avatar::Avatar& avatar, lv_obj_t* panel, uint32_t now);    // suit on at once, no transition
     void hide(avatar::Avatar& avatar);                                   // gone at once, default features back
     void setPose(BuddyPose pose, uint32_t now);
-    // 0 clay (the brand colour, muted on the CoreS3 LCD), 1 orange, 2 bright orange.
-    void setColorScheme(int scheme);
+    void setColors(uint32_t body, uint32_t outline);  // suit and the outline of hands and arm
     // Draws the next frame; hides itself when the transition out ends.
     void update(avatar::Avatar& avatar, uint32_t now);
     // The head movement asked for since the last call, if any.

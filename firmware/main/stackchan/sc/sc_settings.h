@@ -40,6 +40,9 @@ enum class SettingId : uint8_t {
     Claude,
     ClaudeSuit,
     SuitColor,
+    SuitR,
+    SuitG,
+    SuitB,
     SuitOffMinutes,
     SuitHead,
     SuitHeadSpeed,
@@ -117,5 +120,8 @@ inline int setting(SettingId id)
 {
     return ScSettings::get().value(id);
 }
+
+// Pixel buddy suit colour from the settings (REQ-007): body and the darker outline, 0xRRGGBB.
+void suit_colors(uint32_t& body, uint32_t& outline);
 
 }  // namespace stackchan::sc

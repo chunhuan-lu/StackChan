@@ -16,7 +16,9 @@ Code terminal) from four mock-ups. Requests made along the way:
   outline so hands and arm stand out against the body;
 - head movements (servos) during the transitions, switchable and with adjustable speed in the settings panel;
 - a proper orange: the brand clay (#D97757) looked greyish on the CoreS3 LCD, so the colour is a setting with clay,
-  orange (#F2711C, default) and bright orange (#FF5F00) to compare on the device.
+  orange (#F2711C, default) and bright orange (#FF5F00) to compare on the device; even bright orange looked pale,
+  so a custom colour (red / green / blue) can be tuned by eye next to the monitor, with a colour swatch on those
+  panel rows (the panel covers the face).
 
 Design canvas (private): StackChan Claude 表情, artboards "C 像素小伙伴", "穿上 Claude 皮套", "脱下 Claude 皮套".
 
@@ -58,7 +60,8 @@ Pitch stays within 13–30° (limits 5–85°). Speed: `suit_head_spd` for the m
 | Key | Panel label | Range | Default (Kconfig) |
 |---|---|---|---|
 | `claude_suit` | Pixel buddy suit | on / off | `SC_CLAUDE_SUIT` y |
-| `suit_color` | Suit colour | Clay / Orange / Bright | `SC_CLAUDE_SUIT_COLOR` 1 (orange) |
+| `suit_color` | Suit colour | Clay / Orange / Bright / Custom | `SC_CLAUDE_SUIT_COLOR` 1 (orange) |
+| `suit_r`, `suit_g`, `suit_b` | Custom red / green / blue | 0–255 (5) | `SC_CLAUDE_SUIT_CUSTOM_R/G/B` 217 / 119 / 87 (#D97757) |
 | `suit_off_min` | Suit off after | 1–30 min | `SC_CLAUDE_SUIT_OFF_MINUTES` 2 |
 | `suit_head` | Head moves along | on / off | `SC_CLAUDE_SUIT_HEAD` y |
 | `suit_head_spd` | Head speed | 100–1000 (50) | `SC_CLAUDE_SUIT_HEAD_SPEED` 600 |

@@ -10,10 +10,7 @@
 
 namespace stackchan::sc {
 
-// Colours. Suit and outline (hands and arm, so they stand out against the body) per scheme: the brand clay
-// looks greyish on the CoreS3 LCD, so plain and bright oranges are offered too.
-static constexpr uint32_t kSchemes[][2] = {{0xD97757, 0x8A3B22}, {0xF2711C, 0x8C3A06}, {0xFF5F00, 0x993300}};
-static constexpr int kSchemeCount       = sizeof(kSchemes) / sizeof(kSchemes[0]);
+// Colours (the suit's own colour comes from setColors())
 static constexpr uint32_t kInk     = 0x141413;
 static constexpr uint32_t kIvory   = 0xFAF9F5;
 static constexpr uint32_t kBlue    = 0x7FC8FF;
@@ -242,7 +239,7 @@ void PixelBuddy::build(avatar::Avatar& av, lv_obj_t* panel)
 
         // The suit
         if (_body == 0) {
-            setColorScheme(1);
+            setColors(0xF2711C, 0x8C3A06);  // orange until the owner sets a colour
         }
         for (auto& b : _legs) box(b, _layer, _body, 0);
         for (auto& b : _claw) {
@@ -351,11 +348,8 @@ void PixelBuddy::hide(avatar::Avatar& av)
     av.setEmotion(av.getEmotion());  // re-sync the eyelids
 }
 
-void PixelBuddy::setColorScheme(int scheme)
+void PixelBuddy::setColors(uint32_t body, uint32_t outline)
 {
-    scheme                 = std::clamp(scheme, 0, kSchemeCount - 1);
-    const uint32_t body    = kSchemes[scheme][0];
-    const uint32_t outline = kSchemes[scheme][1];
     if (body == _body && outline == _outline) {
         return;
     }

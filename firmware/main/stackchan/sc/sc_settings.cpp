@@ -55,6 +55,15 @@
 #ifndef CONFIG_SC_CLAUDE_SUIT_COLOR
 #define CONFIG_SC_CLAUDE_SUIT_COLOR 1
 #endif
+#ifndef CONFIG_SC_CLAUDE_SUIT_CUSTOM_R
+#define CONFIG_SC_CLAUDE_SUIT_CUSTOM_R 217
+#endif
+#ifndef CONFIG_SC_CLAUDE_SUIT_CUSTOM_G
+#define CONFIG_SC_CLAUDE_SUIT_CUSTOM_G 119
+#endif
+#ifndef CONFIG_SC_CLAUDE_SUIT_CUSTOM_B
+#define CONFIG_SC_CLAUDE_SUIT_CUSTOM_B 87
+#endif
 #ifndef CONFIG_SC_CLAUDE_SUIT_OFF_MINUTES
 #define CONFIG_SC_CLAUDE_SUIT_OFF_MINUTES 2
 #endif
@@ -71,7 +80,7 @@ namespace stackchan::sc {
 
 static constexpr const char* kNvsNamespace = "sc_cfg";
 static const char* const kActivityLabels[] = {"Off", "Low", "Medium", "High"};
-static const char* const kSuitColorLabels[] = {"Clay", "Orange", "Bright"};
+static const char* const kSuitColorLabels[] = {"Clay", "Orange", "Bright", "Custom"};
 
 // Ranges here and in Kconfig.projbuild are the same.
 static const SettingInfo kSettings[] = {
@@ -108,8 +117,14 @@ static const SettingInfo kSettings[] = {
     {SettingId::ClaudeSuit, "claude_suit", "Claude Code", "Pixel buddy suit", "", SettingType::Bool, SC_SUIT_DEFAULT,
      0, 1, 1, nullptr, "While Claude Code works the robot wears an orange pixel buddy costume, put on and taken off with a funny transition."},
     {SettingId::SuitColor, "suit_color", "Claude Code", "Suit colour", "", SettingType::Choice,
-     CONFIG_SC_CLAUDE_SUIT_COLOR, 0, 2, 1, kSuitColorLabels,
-     "Colour of the costume: 0 clay (the Claude brand colour, muted on this screen), 1 orange, 2 bright orange."},
+     CONFIG_SC_CLAUDE_SUIT_COLOR, 0, 3, 1, kSuitColorLabels,
+     "Colour of the costume: 0 clay (the Claude brand colour, muted on this screen), 1 orange, 2 bright orange, 3 custom (suit_r, suit_g, suit_b)."},
+    {SettingId::SuitR, "suit_r", "Claude Code", "Custom red", "", SettingType::Int, CONFIG_SC_CLAUDE_SUIT_CUSTOM_R, 0,
+     255, 5, nullptr, "Red part of the custom suit colour, 0-255."},
+    {SettingId::SuitG, "suit_g", "Claude Code", "Custom green", "", SettingType::Int, CONFIG_SC_CLAUDE_SUIT_CUSTOM_G,
+     0, 255, 5, nullptr, "Green part of the custom suit colour, 0-255."},
+    {SettingId::SuitB, "suit_b", "Claude Code", "Custom blue", "", SettingType::Int, CONFIG_SC_CLAUDE_SUIT_CUSTOM_B, 0,
+     255, 5, nullptr, "Blue part of the custom suit colour, 0-255."},
     {SettingId::SuitOffMinutes, "suit_off_min", "Claude Code", "Suit off after", " min", SettingType::Int,
      CONFIG_SC_CLAUDE_SUIT_OFF_MINUTES, 1, 30, 1, nullptr,
      "Minutes without Claude Code activity before the robot takes the costume off."},
@@ -136,6 +151,9 @@ static bool compiled_in(SettingId id)
         case SettingId::Claude:
         case SettingId::ClaudeSuit:
         case SettingId::SuitColor:
+        case SettingId::SuitR:
+        case SettingId::SuitG:
+        case SettingId::SuitB:
         case SettingId::SuitOffMinutes:
         case SettingId::SuitHead:
         case SettingId::SuitHeadSpeed:
@@ -309,6 +327,21 @@ void ScSettings::resetAll()
         }
     }
     save_locked();
+}
+
+void suit_colors(uint32_t& body, uint32_t& outline)
+{
+    // The brand clay looks greyish on the CoreS3 LCD, hence the oranges and the custom colour.
+    static constexpr uint32_t kSchemes[][2] = {{0xD97757, 0x8A3B22}, {0xF2711C, 0x8C3A06}, {0xFF5F00, 0x993300}};
+    const int scheme = setting(SettingId::SuitColor);
+    if (scheme >= 0 && scheme < 3) {
+        body    = kSchemes[scheme][0];
+        outline = kSchemes[scheme][1];
+        return;
+    }
+    const uint32_t r = setting(SettingId::SuitR), g = setting(SettingId::SuitG), b = setting(SettingId::SuitB);
+    body    = r << 16 | g << 8 | b;
+    outline = (r * 5 / 8) << 16 | (g / 2) << 8 | (b * 2 / 5);
 }
 
 const char* ScSettings::format(const SettingInfo& s, int value, char* buffer, size_t size)

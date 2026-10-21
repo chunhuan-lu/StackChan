@@ -47,7 +47,8 @@ fork 新增的功能（待机导演、表情、睡眠屏幕、Claude Code 联动
 | `tap_wake` | Tap wakes me up | 开 / 关 | 开 | `SC_IDLE_DIRECTOR` + `SC_TOUCH_FIXES` |
 | `claude` | Show Claude Code | 开 / 关 | 开 | `SC_IDLE_DIRECTOR` + `SC_USB_LINK` |
 | `claude_suit` | Pixel buddy suit | 开 / 关 | `SC_CLAUDE_SUIT` y | `SC_IDLE_DIRECTOR` + `SC_USB_LINK`（REQ-007） |
-| `suit_color` | Suit colour | Clay / Orange / Bright | `SC_CLAUDE_SUIT_COLOR` 1 | 同上 |
+| `suit_color` | Suit colour | Clay / Orange / Bright / Custom | `SC_CLAUDE_SUIT_COLOR` 1 | 同上 |
+| `suit_r` / `suit_g` / `suit_b` | Custom red / green / blue | 0–255（5） | `SC_CLAUDE_SUIT_CUSTOM_R/G/B` 217 / 119 / 87 | 同上 |
 | `suit_off_min` | Suit off after | 1–30 分钟 | `SC_CLAUDE_SUIT_OFF_MINUTES` 2 | 同上 |
 | `suit_head` | Head moves along | 开 / 关 | `SC_CLAUDE_SUIT_HEAD` y | 同上 |
 | `suit_head_spd` | Head speed | 100–1000（50） | `SC_CLAUDE_SUIT_HEAD_SPEED` 600 | 同上 |

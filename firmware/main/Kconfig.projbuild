@@ -1187,13 +1187,32 @@ menu "StackChan fork options"
             (REQ-007). Default of the "claude_suit" setting.
 
     config SC_CLAUDE_SUIT_COLOR
-        int "Suit colour (0 clay, 1 orange, 2 bright orange)"
-        range 0 2
+        int "Suit colour (0 clay, 1 orange, 2 bright orange, 3 custom)"
+        range 0 3
         default 1
         depends on SC_CLAUDE_SUIT
         help
-            Clay is the Claude brand colour; it looks greyish on the CoreS3 LCD. Default of the
-            "suit_color" setting.
+            Clay is the Claude brand colour; it looks greyish on the CoreS3 LCD. Custom uses the three
+            values below, which can be tuned on the device to match another screen by eye. Default of
+            the "suit_color" setting.
+
+    config SC_CLAUDE_SUIT_CUSTOM_R
+        int "Custom suit colour: red (0-255)"
+        range 0 255
+        default 217
+        depends on SC_CLAUDE_SUIT
+
+    config SC_CLAUDE_SUIT_CUSTOM_G
+        int "Custom suit colour: green (0-255)"
+        range 0 255
+        default 119
+        depends on SC_CLAUDE_SUIT
+
+    config SC_CLAUDE_SUIT_CUSTOM_B
+        int "Custom suit colour: blue (0-255)"
+        range 0 255
+        default 87
+        depends on SC_CLAUDE_SUIT
 
     config SC_CLAUDE_SUIT_OFF_MINUTES
         int "Take the suit off after (minutes without Claude Code activity)"

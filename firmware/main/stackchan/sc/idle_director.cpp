@@ -1541,6 +1541,13 @@ void IdleDirectorModifier::claude_reaction(Modifiable& sc, FaceStyle face, Buddy
 /*                                  Pixel buddy suit (REQ-007)                                    */
 /* ---------------------------------------------------------------------------------------------- */
 
+static void apply_suit_colors(PixelBuddy& buddy)
+{
+    uint32_t body = 0, outline = 0;
+    suit_colors(body, outline);
+    buddy.setColors(body, outline);
+}
+
 bool IdleDirectorModifier::suit_allowed() const
 {
     return ScSettings::get().enabled(SettingId::ClaudeSuit) && claude_on() && faces_on() &&
@@ -1576,7 +1583,7 @@ void IdleDirectorModifier::update_suit(Modifiable& sc, uint32_t now)
             }
             _face.clear(av);
             _temp_face = FaceStyle::None;
-            _buddy.setColorScheme(setting(SettingId::SuitColor));
+            apply_suit_colors(_buddy);
             if (now - _created < 3000) {
                 _buddy.show(av, avatar_panel(sc), now);  // back after a conversation: no transition
                 mclog::tagInfo(_tag, "claude suit: on");
@@ -1591,7 +1598,7 @@ void IdleDirectorModifier::update_suit(Modifiable& sc, uint32_t now)
     }
 
     if (_buddy.visible()) {
-        _buddy.setColorScheme(setting(SettingId::SuitColor));
+        apply_suit_colors(_buddy);
         _buddy.setPose(buddy_pose(now), now);
         _buddy.update(av, now);
         on_buddy_cue(_buddy.takeCue(), now);

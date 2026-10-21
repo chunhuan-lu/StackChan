@@ -37,6 +37,7 @@ struct Row {
     SettingId id;
     lv_obj_t* value  = nullptr;  // value label (Int / Choice)
     lv_obj_t* toggle = nullptr;  // switch (Bool)
+    lv_obj_t* swatch = nullptr;  // the suit colour, on its rows: compare it with a reference by eye
 };
 
 struct Step {
@@ -75,7 +76,13 @@ void refresh_values()
     auto& settings   = ScSettings::get();
     s_panel->version = settings.version();
     char text[32];
+    uint32_t body = 0, outline = 0;
+    suit_colors(body, outline);
     for (auto& row : s_panel->rows) {
+        if (row.swatch) {
+            lv_obj_set_style_bg_color(row.swatch, lv_color_hex(body), 0);
+            lv_obj_set_style_border_color(row.swatch, lv_color_hex(outline), 0);
+        }
         const auto& info = settings.info(row.id);
         const int v      = settings.value(row.id);
         if (row.value) {
@@ -202,13 +209,25 @@ void add_row(lv_obj_t* list, const SettingInfo& info)
     lv_obj_set_style_radius(row, 10, 0);
     lv_obj_set_style_pad_hor(row, 10, 0);
 
+    const bool suit_colour = info.id == SettingId::SuitColor || info.id == SettingId::SuitR ||
+                             info.id == SettingId::SuitG || info.id == SettingId::SuitB;
+
     // Long labels wrap to a second line; two lines of montserrat 16 fit the row.
     lv_obj_t* name = label(row, info.label, &lv_font_montserrat_16, kText);
-    lv_obj_set_width(name, info.type == SettingType::Bool ? 220 : 130);
+    lv_obj_set_width(name, info.type == SettingType::Bool ? 220 : suit_colour ? 92 : 130);
     lv_obj_align(name, LV_ALIGN_LEFT_MID, 0, 0);
 
     s_panel->rows.push_back({info.id});
     Row& r = s_panel->rows.back();
+    if (suit_colour) {
+        r.swatch = plain(row);
+        lv_obj_set_size(r.swatch, 30, 30);
+        lv_obj_set_style_radius(r.swatch, 4, 0);
+        lv_obj_set_style_bg_opa(r.swatch, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(r.swatch, 2, 0);
+        lv_obj_set_style_border_opa(r.swatch, LV_OPA_COVER, 0);
+        lv_obj_align(r.swatch, LV_ALIGN_RIGHT_MID, -158, 0);  // left of the minus button
+    }
     if (info.type == SettingType::Bool) {
         r.toggle = lv_switch_create(row);
         lv_obj_set_size(r.toggle, 52, 28);
