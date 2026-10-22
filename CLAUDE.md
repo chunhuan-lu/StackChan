@@ -11,7 +11,8 @@ Full rules: [docs/CONVENTIONS.md](docs/CONVENTIONS.md).
 
 ## Workflow
 
-- Work on `feat/*` / `fix/*` branches from `dev`; never commit to `main` (upstream mirror). Conventional Commits.
+- Work on `feat/*` / `fix/*` branches from `main` (the fork; upstream is `upstream/main`); merge back with `--no-ff`
+  only after it builds and is verified on the device, and ask before pushing. Conventional Commits.
 - Keep the upstream diff small: new files, small marked hooks, Kconfig switches prefixed `SC_`.
 - xiaozhi changes go into `firmware/patches/xiaozhi-esp32-fork.patch`, never into upstream's `xiaozhi-esp32.patch`.
 - Build with ESP-IDF **v5.5.4** before every commit. Record on-device verification in `docs/devlog/`; never claim

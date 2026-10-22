@@ -17,17 +17,17 @@ Scope: this fork ([chunhuan-lu/StackChan](https://github.com/chunhuan-lu/StackCh
 
 | Branch | Purpose |
 |---|---|
-| `main` | Mirror of upstream `m5stack/StackChan`. Never commit to it directly. |
-| `dev` | Integration branch of this fork. |
-| `feat/<topic>`, `fix/<topic>`, `docs/<topic>` | Work branches created from `dev`, merged back into `dev` once built and verified. |
+| `main` | The fork: upstream v1.6.0 plus the merged work branches (since 2026-10-22). Upstream itself is `upstream/main`. |
+| `feat/<topic>`, `fix/<topic>`, `docs/<topic>` | Work branches created from `main`, merged back with `--no-ff` once built and verified on the device. |
+| `dev` | Old integration branch (until 2026-10-22), no longer used. |
 
 - Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/): `type(scope): summary`.
   Types: `feat`, `fix`, `docs`, `refactor`, `build`, `test`, `chore`. Scopes: `firmware`, `xiaozhi`, `docs`, `tools`, ...
 - Syncing an upstream release:
   ```
   git fetch upstream
-  git switch main && git merge --ff-only upstream/main && git push origin main
-  git switch dev && git merge main      # then rebuild and re-check the xiaozhi patches
+  git switch -c sync/upstream-<version> main && git merge upstream/main
+  # rebuild, re-check the xiaozhi patches and the partition table, test on the device, then merge into main
   ```
 - Remotes: `origin` = this fork, `upstream` = official (push disabled), `artrobin` = reference only (push disabled).
 

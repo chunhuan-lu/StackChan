@@ -17,17 +17,17 @@
 
 | 分支 | 用途 |
 |---|---|
-| `main` | 官方 `m5stack/StackChan` 的镜像，不在上面直接提交 |
-| `dev` | 本 fork 的集成分支 |
-| `feat/<主题>`、`fix/<主题>`、`docs/<主题>` | 从 `dev` 拉出的工作分支，编译并验证通过后合回 `dev` |
+| `main` | 本 fork：官方 v1.6.0 加上合并进来的工作分支（2026-10-22 起）。官方仓库本身是 `upstream/main` |
+| `feat/<主题>`、`fix/<主题>`、`docs/<主题>` | 从 `main` 拉出的工作分支，编译并在真机验证后用 `--no-ff` 合回 `main` |
+| `dev` | 旧的集成分支（用到 2026-10-22），不再使用 |
 
 - 提交信息遵循 [Conventional Commits](https://www.conventionalcommits.org/)：`type(scope): summary`。
   type 包括：`feat`、`fix`、`docs`、`refactor`、`build`、`test`、`chore`；scope 比如：`firmware`、`xiaozhi`、`docs`、`tools` 等。
 - 同步官方新版本：
   ```
   git fetch upstream
-  git switch main && git merge --ff-only upstream/main && git push origin main
-  git switch dev && git merge main      # 然后重新编译，并检查小智补丁是否还能打上
+  git switch -c sync/upstream-<版本> main && git merge upstream/main
+  # 重新编译，检查小智补丁和分区表，在真机上测试，然后再合回 main
   ```
 - 远程仓库：`origin` 是本 fork；`upstream` 是官方仓库（已禁止推送）；`artrobin` 只作参考（已禁止推送）。
 
