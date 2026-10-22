@@ -31,10 +31,28 @@ then for the behaviour, with switches in the settings panel.
   see below).
 - Rate: at most `face_probe` checks per second (default 1) while looking for a face; the director can ask for the
   next check at once when the head has settled after a turn, but never closer than 300 ms to the previous one.
-- The biggest face (closest) is published as a `Sighting`: sequence number, frame time, centre and width in 0..1 of
-  the frame (camera view, not mirrored), score. A debug overlay draws the box mirrored on the screen (`face_box`).
+- Every analysed frame publishes one `Sighting`: sequence number, frame time, kind, centre in 0..1 of the frame
+  (camera view, not mirrored), size and score. Kinds, best first: `Face` (the detector's biggest, i.e. closest,
+  face), `Track` (that face's patch found again), `Motion`, `None`. A debug overlay draws the box mirrored on the
+  screen (`face_box`): green for a detected face, yellow for its tracked patch.
 - Every 30 s one log line: detections, dark frames, faces, detection time, CPU of the wake word task and of both idle
   tasks, microphone audio lost, the largest microphone backlog and how often detection waited for the wake word.
+
+### Between detections (`main/hal/sc/frame_cues.*`)
+
+Detections are slow (about 200 ms) and rare (they wait for the wake word), so every frame also gets an 80 x 60 luma
+copy (4 x 4 blocks from a quarter of the samples) for two cheap cues:
+
+- **Patch tracking**: a detected face's patch (at least 6 x 6, at most the central 24 x 24 small pixels) is looked
+  for every 250 ms near where it should be: the last position, shifted by the head turn since then (head angles
+  from the director), +/-6 small pixels around it, zero-mean sum of absolute differences (brightness changes do not
+  count). A match below 16 levels per pixel is accepted; one below 10 refreshes a quarter of the template, so a
+  face turning away slowly stays found. Each detection renews the template; it is dropped 4 s after the last one or
+  after two misses. No search while the head turns (blurred frames, lagging angles).
+- **Motion**: while the director searches, a frame every 400 ms; the difference to the previous small frame (both
+  taken with the head still at the same angles, means taken out) above 22 levels counts as moved. Fewer than 12
+  moved pixels is noise, more than 35 % of the frame a change of the whole picture (exposure).
+- Cue frames wait for the wake word too, but only above 160 ms of backlog.
 
 ### esp-dl and esp-sr in one image
 
@@ -67,23 +85,28 @@ The idle director owns it, so it never fights the other idle behaviours for the 
   only takes steps both eyes can follow, and it is dropped at once before an animation or a drawn face moves the
   eyes by its own offsets (their sum could hit the limit and the part cut off would never be undone) and when the
   director goes (conversation).
-- **Head** (`face_head`): only on frames taken at least 250 ms after the servos stopped (polled every 150 ms). When
-  the face is more than 5 degrees off the middle, the head turns 70 % of the angle at speed 300, yaw within
-  +/-70 degrees, pitch within 15-75 degrees (inside the 5-85 degree safety range). The eyes then need only 30 % of the
-  way. After the turn settles the director asks for the next check at once.
+- **Directions in the room**: the director reads both servo angles every 100 ms and keeps the last 2.4 s. Each
+  sighting becomes a direction: the head angle at the frame time (interpolated) plus the angle in the view. So frames
+  taken while the head turns count as well, and errors do not add up from step to step.
+- **Head** (`face_head`): follows that direction continuously, 0.35 s ahead of someone moving faster than 4 deg/s
+  (speed from the last placements, smoothed), when the head points more than 4 degrees away; the servo speed grows
+  with the distance (180-500). Yaw within +/-70 degrees, pitch within 15-75 degrees (inside the 5-85 degree safety
+  range). A tracked patch keeps following going but does not start it (a face has to be detected first).
 - **Direction**: positive yaw turns to the robot's right. Measured with the gyro on 2026-10-22: a +20 degree yaw
   move turned clockwise seen from above (peak -45.8 deg/s), the way back +42.6 deg/s. The upstream comment on
-  `Motion::lookAtPoint` says the opposite; the voice tool ("-128 as your left") agrees with the measurement.
-- The head never steps against the error: standing outside the range (e.g. still at the sleep pitch after being
-  picked up), a step that the range would turn around is skipped.
-- **Wrong-way guard**: the first still frame after a turn checks that the face got closer to the middle. Two turns in
-  a row, within a minute, that leave it more than 3 degrees further off on the same side pause head tracking for
-  5 minutes with a warning in the log (a camera or servo mounted the other way round would otherwise chase the face
-  out of view). A face gone right after a turn does not count: on the first morning test (2026-10-22) two such
-  frames (people move, detection misses one now and then) paused head tracking for 30 minutes.
+  `Motion::lookAtPoint` says the opposite; the voice tool ("-128 as your left") agrees with the measurement, and so
+  did the first test with a face.
+- **Lost** (no face or patch for 1.2 s): moving faster than 8 deg/s or last seen in the outer 40 % of the view, the
+  head turns 15-30 degrees further that way, then back to the last place, then 15 degrees to the other side, looking
+  1.5 s at each stop (with a detection once settled). Lost in the middle (turned away, covered): it waits there 4 s.
+  Motion during the search (0.3-30 % of the view) turns the head towards it, at most every 2.5 s.
+- **Someone here**: for 2 minutes after the last face or patch the robot does no head-look or nod-off behaviour, and
+  when something else turned the head away (a reaction, a conversation) it turns back to where they were, at most
+  every 5 s. The place is kept in the idle mood, so it survives a conversation.
+- The earlier wrong-way guard is gone: with directions in the room an error does not compound, and the direction is
+  verified. (On the first morning test it had paused head tracking for 30 minutes after two frames without a face.)
 - Sightings older than 1.5 s (from before a conversation or a doze) are skipped.
-- While a face is seen, idle glances wait 6 s and head behaviours 20 s after each sighting. No face for 4 s: the eyes
-  go back; for 10 s: tracking ends and the idle behaviours resume.
+- While following, idle glances wait 6 s and head behaviours 20 s after each placement.
 - **Greeting**: a face found more than 2 minutes after the last face or interaction gets the Joy face for 2.5 s (the
   happy emotion when `faces` is off). Not while the buddy suit is on, an animation plays or the head is touched.
 - Not while asleep, held, tilted, touched, during suit transitions, nod-off or the morning stretch.
@@ -156,8 +179,9 @@ frame must be announced on the screen first.
 
 1. Sit in front of the robot in a lit room: the eyes should turn towards you within about a second; with
    `face_box` on, the box shows what the camera sees.
-2. Move to the side: the head should turn after you in one or two steps and stop when you are in the middle; no
-   "wrong way" warning in the log.
+2. Move to the side, slowly and faster: the head should follow without stopping; turn your face away or look down:
+   the yellow box should take over for a few seconds; walk out of the view on one side: the head should go after
+   you; leave it alone: it should keep facing where you were.
 3. Leave for more than 2 minutes and come back: Joy face.
 4. Say "起来干活" while it watches you: it should wake every time (perhaps a fraction of a second later).
 5. Switch `sleep` off at night: the robot wakes and stays awake; switch it on again.
@@ -166,7 +190,8 @@ frame must be announced on the screen first.
 
 | File | Change |
 |---|---|
-| `main/hal/sc/face_probe.*` | Detection task, `Sighting`, `keep_running()`, `request_check()` |
+| `main/hal/sc/face_probe.*` | Detection task, `Sighting`, `keep_running()`, `request_check()`, `note_head()` |
+| `main/hal/sc/frame_cues.*` | Small frames, patch tracking, motion |
 | `main/stackchan/sc/idle_director_face.cpp`, `idle_director.*` | Tracking behaviour, gaze, wrong-way guard, sleep switch |
 | `main/hal/board/cores3_audio_codec.*` | Microphone buffer and pump, lost-audio counter |
 | `main/hal/hal_imu.cpp`, `hal.h` | `watchImuTurn()` |
