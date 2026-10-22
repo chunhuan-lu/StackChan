@@ -10,6 +10,7 @@
 #include "face_art.h"
 #include "pixel_buddy.h"
 #include <hal/hal.h>
+#include <hal/sc/face_probe.h>
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -29,7 +30,9 @@ struct IdleMood {
     float affection            = 0.3f;   // 0 .. 1, grows slowly with petting
     float headTokens           = -1.0f;  // servo budget for spontaneous head moves, < 0 = uninitialised
     uint32_t lastInteractionMs = 0;
-    uint32_t lastFaceMs        = 0;  // last time the camera saw a face (REQ-008)
+    uint32_t lastFaceMs        = 0;  // last time the camera saw a face, or its tracked patch (REQ-008)
+    float faceYaw              = 0;  // where that was: servo angles, 0.1 degree
+    float facePitch            = 0;
 };
 
 IdleMood& GetIdleMood();
@@ -141,10 +144,17 @@ private:
     void run_head_keys(Modifiable& sc, uint32_t now);
     // Face tracking (REQ-008), idle_director_face.cpp
     void update_face_track(Modifiable& sc, uint32_t now);
-    void on_face_sighting(Modifiable& sc, float cx, float cy, uint32_t taken, uint32_t now);
+    void poll_head(Modifiable& sc, uint32_t now);
+    bool head_at(uint32_t t, float& yaw, float& pitch) const;
+    void on_sighting(Modifiable& sc, const ::sc::face_probe::Sighting& s, uint32_t now);
+    void place_person(Modifiable& sc, const ::sc::face_probe::Sighting& s, float yaw, float pitch, float ex,
+                      uint32_t now);
+    void follow(Modifiable& sc, uint32_t now);
+    void seek(Modifiable& sc, uint32_t now);
+    void look_back(Modifiable& sc, uint32_t now);
+    bool head_turn(Modifiable& sc, float yaw, float pitch, int speed, uint32_t now);
     bool face_head_allowed(Modifiable& sc) const;
-    bool frame_still(uint32_t taken) const;
-    void note_turn_result(bool wrong, float ex, float ey, uint32_t now);
+    bool person_present(uint32_t now) const;
     void end_face_track(uint32_t now);
     void step_gaze(Modifiable& sc, uint32_t now);
     void drop_gaze(Modifiable& sc);
@@ -275,22 +285,45 @@ private:
     std::vector<HeadKey> _head_keys;
     int _head_base_pitch = 0;  // where the head was when the current run of keys began
 
-    // Face tracking
-    uint32_t _face_seq         = 0;      // last detection handled
-    bool _face_tracking        = false;  // a face was seen lately: glances and head behaviours wait
-    uint32_t _face_seen_at     = 0;
-    uint32_t _next_move_poll   = 0;
-    uint32_t _head_still_since = 0;      // 0 while the servos move
-    bool _face_check_pending   = false;  // ask for a detection once the head has settled
-    uint32_t _face_head_log_at = 0;
-    bool _face_turned          = false;  // the head turned for a face; the next still frame checks the direction
-    float _face_turn_ex        = 0;      // the face's angles (degrees) that turn was for
-    float _face_turn_ey        = 0;
-    int _face_wrong_way           = 0;  // turns in a row that left the face further off
-    uint32_t _face_wrong_at       = 0;  // the last of them
-    uint32_t _face_head_off_until = 0;  // head tracking paused (wrong way) until then, 0 = not paused
-    int _gaze_x = 0, _gaze_y = 0;        // eye offset applied, avatar position units
-    int _gaze_tx = 0, _gaze_ty = 0;      // where the eyes are going
+    // Face tracking: servo angles in 0.1 degree, yaw > 0 is the robot's right, pitch > 0 up
+    struct HeadSample {
+        uint32_t at;
+        int16_t yaw;
+        int16_t pitch;
+    };
+    enum class Seek : uint8_t {
+        None,   // following, or nobody here
+        Hold,   // lost in the middle of the view: wait where the person was (patch and motion may find them)
+        Coast,  // lost towards an edge or while moving: turned further that way
+        Back,   // back where the person was last seen
+        Other,  // the other side of it
+        Done,   // searched: stay facing the last place while someone is (probably) here
+    };
+    std::array<HeadSample, 24> _head_hist{};  // a poll every 100 ms: the last 2.4 s
+    uint8_t _head_len          = 0;
+    uint8_t _head_pos          = 0;
+    uint32_t _next_head_poll   = 0;
+    int _head_yaw              = 0;  // latest poll
+    int _head_pitch            = 0;
+    uint32_t _head_still_since = 0;  // 0 while the servos move
+    uint32_t _face_seq         = 0;  // last sighting handled
+    bool _face_tracking        = false;  // following someone: glances and head behaviours wait
+    uint32_t _person_at        = 0;  // last time a face (or its patch) placed the person (this director)
+    float _person_vyaw         = 0;  // how fast they move, 0.1 degree per second
+    float _person_vpitch       = 0;
+    float _person_ex           = 0;  // the last placement's horizontal offset in the view, degrees
+    Seek _seek                 = Seek::None;
+    uint32_t _seek_until       = 0;
+    int _seek_dir              = 0;  // +1: the robot's right
+    bool _check_on_settle      = false;  // ask for a detection once the head has settled
+    uint32_t _next_motion_turn = 0;
+    uint32_t _next_look_back   = 0;
+    uint32_t _last_cmd_at      = 0;
+    float _cmd_yaw             = 0;  // last head command
+    float _cmd_pitch           = 0;
+    uint32_t _face_log_at      = 0;
+    int _gaze_x = 0, _gaze_y = 0;    // eye offset applied, avatar position units
+    int _gaze_tx = 0, _gaze_ty = 0;  // where the eyes are going
     uint32_t _gaze_step_at = 0;
 
     // Claude Code session LEDs (slot i = LEDs 1+i and 7+i)

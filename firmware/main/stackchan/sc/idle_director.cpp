@@ -964,9 +964,12 @@ float IdleDirectorModifier::behavior_weight(int behavior) const
     const bool tokens = _activity > 0 && m.headTokens >= 1.0f;
     const bool afternoon = _time_valid && _hour >= 13 && _hour < 16;
 
+    // Someone was here in the last two minutes (face tracking): no turning away or nodding off on them.
+    const bool someone = person_present(GetHAL().millis());
+
     switch (behavior) {
         case kHeadLook:
-            return tokens ? 2.0f + 3.0f * m.boredom : 0.0f;
+            return tokens && !someone ? 2.0f + 3.0f * m.boredom : 0.0f;
         case kYawn:
             return 2.5f * (1.0f - m.energy);
         case kSideEye:
@@ -981,7 +984,7 @@ float IdleDirectorModifier::behavior_weight(int behavior) const
         case kHum:
             return 2.0f * std::max(0.0f, m.valence - 0.6f);
         case kNodOff:
-            return afternoon && m.energy < 0.6f ? 0.5f + 3.0f * (0.6f - m.energy) : 0.0f;
+            return afternoon && m.energy < 0.6f && !someone ? 0.5f + 3.0f * (0.6f - m.energy) : 0.0f;
         case kLookAround:
             return 1.0f + 1.5f * m.boredom;
         case kNothing:

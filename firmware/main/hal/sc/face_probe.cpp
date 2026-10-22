@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: MIT
  */
 #include "face_probe.h"
+#include "frame_cues.h"
 #include <sdkconfig.h>
 
 #if CONFIG_SC_FACE_PROBE
@@ -38,6 +39,14 @@ static constexpr uint32_t kPollMs     = 20;
 static constexpr uint32_t kMaxBacklogMs = 80;
 static constexpr uint32_t kMinGapMs     = 300;
 static constexpr uint32_t kWantedMs     = 2000;
+// Between detections: the last face's patch is looked for this often while it is younger than kTrackHoldMs (a
+// detection renews it), and motion this often while the director searches. Lighter than a detection, but they still
+// wait for the wake word when its backlog passes kCueBacklogMs.
+static constexpr uint32_t kTrackPeriodMs  = 250;
+static constexpr uint32_t kTrackHoldMs    = 4000;
+static constexpr uint32_t kMotionPeriodMs = 400;
+static constexpr uint32_t kCueBacklogMs   = 160;
+static constexpr uint32_t kHeadNoteMs     = 500;  // older head angles are unknown
 // The DVP camera has one buffer: the frame waiting in it was taken right after the previous grab. Older than this,
 // it is dropped and the next one taken; a frame takes 50 ms at 20 fps.
 static constexpr uint32_t kFreshMs   = 100;
@@ -51,7 +60,15 @@ static std::mutex s_mutex;
 static Sighting s_latest;
 static bool s_have_latest = false;
 static std::atomic<uint32_t> s_wanted_at{0};
+static std::atomic<uint32_t> s_search_at{0};
 static std::atomic<bool> s_check{false};
+
+struct HeadNote {
+    uint32_t at = 0;
+    int yaw = 0, pitch = 0;
+    bool moving = true;
+};
+static HeadNote s_head;  // under s_mutex
 
 static lv_obj_t* s_box   = nullptr;
 static lv_obj_t* s_label = nullptr;
@@ -66,9 +83,25 @@ bool latest(Sighting& out)
     return true;
 }
 
-void keep_running()
+void keep_running(bool search)
 {
-    s_wanted_at = GetHAL().millis() | 1;  // 0 = never
+    const uint32_t now = GetHAL().millis() | 1;  // 0 = never
+    s_wanted_at        = now;
+    if (search) {
+        s_search_at = now;
+    }
+}
+
+void note_head(uint32_t at, int yaw, int pitch, bool moving)
+{
+    std::lock_guard<std::mutex> lock(s_mutex);
+    s_head = {at, yaw, pitch, moving};
+}
+
+static HeadNote head_note()
+{
+    std::lock_guard<std::mutex> lock(s_mutex);
+    return s_head;
 }
 
 void request_check()
@@ -76,9 +109,9 @@ void request_check()
     s_check = true;
 }
 
-static bool wanted(uint32_t now)
+// at may be a millisecond ahead of now (| 1, or written after now was read).
+static bool recent(uint32_t at, uint32_t now)
 {
-    const uint32_t at = s_wanted_at;  // may be a millisecond ahead of now (| 1, or written after now was read)
     return at != 0 && static_cast<int32_t>(now - at) < static_cast<int32_t>(kWantedMs);
 }
 
@@ -156,8 +189,9 @@ static void create_overlay()
     lv_obj_add_flag(s_label, LV_OBJ_FLAG_HIDDEN);
 }
 
-// Debug overlay (setting "face_box"): the face box in screen coordinates, mirrored.
-static void show_box(bool found, int x1, int y1, int x2, int y2, int w, float score, int det_ms)
+// Debug overlay (setting "face_box"): the face box in screen coordinates, mirrored; green for a detected face,
+// yellow for its tracked patch.
+static void show_box(bool found, int x1, int y1, int x2, int y2, int w, float score, int det_ms, bool tracked = false)
 {
     LvglLockGuard lock;
     if (!found) {
@@ -165,6 +199,9 @@ static void show_box(bool found, int x1, int y1, int x2, int y2, int w, float sc
         lv_obj_add_flag(s_label, LV_OBJ_FLAG_HIDDEN);
         return;
     }
+    const lv_color_t color = lv_color_hex(tracked ? 0xF0D000 : 0x00E060);
+    lv_obj_set_style_border_color(s_box, color, 0);
+    lv_obj_set_style_text_color(s_label, color, 0);
     if (kMirror) {
         const int l = w - 1 - x2, r = w - 1 - x1;
         x1 = l;
@@ -174,7 +211,11 @@ static void show_box(bool found, int x1, int y1, int x2, int y2, int w, float sc
     lv_obj_set_size(s_box, std::max(4, x2 - x1), std::max(4, y2 - y1));
     lv_obj_remove_flag(s_box, LV_OBJ_FLAG_HIDDEN);
     char text[32];
-    snprintf(text, sizeof(text), "%.2f  %d ms", score, det_ms);
+    if (tracked) {
+        snprintf(text, sizeof(text), "track %.2f", score);
+    } else {
+        snprintf(text, sizeof(text), "%.2f  %d ms", score, det_ms);
+    }
     lv_label_set_text(s_label, text);
     lv_obj_set_pos(s_label, x1, std::min(y2 + 4, 222));
     lv_obj_remove_flag(s_label, LV_OBJ_FLAG_HIDDEN);
@@ -220,7 +261,7 @@ static CpuSample cpu_sample()
 
 struct Stats {
     CpuSample from{};
-    int frames = 0, faces = 0, held = 0, dark = 0;
+    int frames = 0, faces = 0, held = 0, dark = 0, tracks = 0, track_misses = 0, motions = 0, cue_frames = 0;
     int64_t sum_det = 0, max_det = 0;
     uint32_t max_backlog = 0;
 
@@ -228,9 +269,10 @@ struct Stats {
     {
         const double us = static_cast<double>(to.at - from.at);
         ESP_LOGI(TAG,
-                 "%d detections in %.0f s (%d frames dark or flat), face in %d, detect avg %d ms (max %d); audio_input "
-                 "%.0f%%, idle core 0 %.0f%%, core 1 %.0f%%; mic lost %u x 10 ms, backlog max %u ms, held back %d x",
-                 frames, us / 1e6, dark, faces, frames ? static_cast<int>(sum_det / frames / 1000) : 0,
+                 "%d detections in %.0f s (%d frames dark or flat), face in %d; %d cue frames, tracked %d (lost %d), "
+                 "motion %d; detect avg %d ms (max %d); audio_input %.0f%%, idle core 0 %.0f%%, core 1 %.0f%%; mic "
+                 "lost %u x 10 ms, backlog max %u ms, held back %d x",
+                 frames, us / 1e6, dark, faces, cue_frames, tracks, track_misses, motions, frames ? static_cast<int>(sum_det / frames / 1000) : 0,
                  static_cast<int>(max_det / 1000), (to.audio - from.audio) * 100.0 / us,
                  (to.idle0 - from.idle0) * 100.0 / us, (to.idle1 - from.idle1) * 100.0 / us,
                  (unsigned)(to.overflows - from.overflows), (unsigned)max_backlog, held);
@@ -256,6 +298,13 @@ static void probe_task(void*)
     bool box_shown          = false;
     int rate_logged         = -1;
 
+    FrameCues cues;
+    if (!cues.begin()) {
+        ESP_LOGE(TAG, "no memory for the small frames");
+        vTaskDelete(nullptr);
+        return;
+    }
+
     Stats stats;
     stats.from = cpu_sample();
     while (true) {
@@ -273,27 +322,34 @@ static void probe_task(void*)
             show_box(false, 0, 0, 0, 0, 0, 0, 0);
             box_shown = false;
         }
-        if (rate <= 0 || !wanted(now) || !hal_bridge::is_xiaozhi_ready() || !hal_bridge::is_xiaozhi_idle()) {
+        if (rate <= 0 || !recent(s_wanted_at, now) || !hal_bridge::is_xiaozhi_ready() || !hal_bridge::is_xiaozhi_idle()) {
             if (box_shown) {
                 show_box(false, 0, 0, 0, 0, 0, 0, 0);
                 box_shown = false;
             }
             s_check = false;
+            cues.drop_template();
             vTaskDelay(pdMS_TO_TICKS(kIdleWaitMs));
             continue;
         }
-        // Next detection: at the rate, or on request (the head has settled), but never back to back.
-        const uint32_t since = now - last_detect;
-        if (since < 1000u / static_cast<uint32_t>(rate) && !(s_check && since >= kMinGapMs)) {
-            vTaskDelay(pdMS_TO_TICKS(kPollMs));
-            continue;
-        }
-        if (cores3_audio_rx_backlog_ms() > kMaxBacklogMs) {
+        // Next frame: a detection at the rate, or on request (the head has settled) but never back to back; in
+        // between the cheaper cues while a face was just seen (tracking) or the director searches (motion).
+        const uint32_t since_detect = now - last_detect, since_grab = now - last_grab;
+        const bool detect_due = since_detect >= 1000u / static_cast<uint32_t>(rate) || (s_check && since_detect >= kMinGapMs);
+        const bool cue_due    = (cues.tracking(now, kTrackHoldMs) && since_grab >= kTrackPeriodMs) ||
+                             (recent(s_search_at, now) && since_grab >= kMotionPeriodMs);
+        const uint32_t backlog  = cores3_audio_rx_backlog_ms();
+        const bool run_detector = detect_due && backlog <= kMaxBacklogMs;
+        if (detect_due && !run_detector) {
             ++stats.held;
+        }
+        if (!run_detector && !(cue_due && backlog <= kCueBacklogMs)) {
             vTaskDelay(pdMS_TO_TICKS(kPollMs));
             continue;
         }
-        s_check = false;
+        if (run_detector) {
+            s_check = false;
+        }
 
         auto* camera = hal_bridge::board_get_camera();
         if (!camera) {
@@ -332,77 +388,117 @@ static void probe_task(void*)
             ESP_LOGI(TAG, "luma in the %s bytes (variance %.0f / %.0f)", lane == 1 ? "even" : "odd", look.var[0],
                      look.var[1]);
         }
-        if (var_max < kFlatVar || look.mean[lane == 1 ? 0 : 1] < kDarkLuma) {
-            Sighting dark;  // nothing to find: publish "no face" without running the detector
-            dark.seq    = ++seq;
-            dark.at     = taken;
-            last_detect = GetHAL().millis();
-            publish(dark);
-            ++stats.dark;
-            continue;
-        }
-        const int dw = w / 2, dh = h / 2;  // detection size
-        if (rgb_size < static_cast<size_t>(dw) * dh * 3) {
-            heap_caps_free(rgb);
-            rgb_size = static_cast<size_t>(dw) * dh * 3;
-            rgb      = static_cast<uint8_t*>(heap_caps_aligned_alloc(16, rgb_size, MALLOC_CAP_SPIRAM));
-            if (!rgb) {
-                ESP_LOGE(TAG, "no memory for the RGB frame");
-                break;
-            }
-        }
-        yuv422_to_rgb888_half(yuv, rgb, w, h, lane == 1);
-
-        if (!detect) {
-            detect = new HumanFaceDetect();
-        }
-        const int64_t t0     = esp_timer_get_time();
-        dl::image::img_t img = {rgb, static_cast<uint16_t>(dw), static_cast<uint16_t>(dh),
-                                dl::image::DL_IMAGE_PIX_TYPE_RGB888};
-        auto& results    = detect->run(img);
-        const int64_t t1 = esp_timer_get_time();
-        last_detect      = GetHAL().millis();
-        stats.max_backlog = std::max(stats.max_backlog, cores3_audio_rx_backlog_ms());
-        static bool loaded_logged = false;
-        if (!loaded_logged) {
-            loaded_logged = true;
-            log_memory("model loaded");
-        }
-
-        // The biggest face is the closest one (boxes in detection size).
-        const dl::detect::result_t* best = nullptr;
-        for (const auto& r : results) {
-            if (r.box.size() >= 4 && (!best || r.box_area() > best->box_area())) {
-                best = &r;
-            }
-        }
         Sighting s;
         s.seq = ++seq;
         s.at  = taken;
-        if (best) {
-            const int x1 = std::clamp(best->box[0], 0, dw), y1 = std::clamp(best->box[1], 0, dh);
-            const int x2 = std::clamp(best->box[2], 0, dw), y2 = std::clamp(best->box[3], 0, dh);
-            s.found = true;
-            s.cx    = (x1 + x2) * 0.5f / dw;
-            s.cy    = (y1 + y2) * 0.5f / dh;
-            s.size  = static_cast<float>(x2 - x1) / dw;
-            s.score = best->score;
-            ++stats.faces;
+        if (var_max < kFlatVar || look.mean[lane == 1 ? 0 : 1] < kDarkLuma) {
+            if (run_detector) {
+                last_detect = GetHAL().millis();
+            }
+            cues.drop_template();
+            publish(s);  // nothing to find: "nothing" without running anything
+            ++stats.dark;
+            continue;
+        }
+
+        const HeadNote head = head_note();
+        const bool head_known = static_cast<int32_t>(taken - head.at) < static_cast<int32_t>(kHeadNoteMs);
+        const bool head_still = head_known && !head.moving;
+        cues.add_frame(yuv, w, h, lane == 1, taken, head.yaw, head.pitch, head_still);
+
+        const dl::detect::result_t* best = nullptr;
+        int det_ms                       = 0;
+        if (run_detector) {
+            const int dw = w / 2, dh = h / 2;  // detection size
+            if (rgb_size < static_cast<size_t>(dw) * dh * 3) {
+                heap_caps_free(rgb);
+                rgb_size = static_cast<size_t>(dw) * dh * 3;
+                rgb      = static_cast<uint8_t*>(heap_caps_aligned_alloc(16, rgb_size, MALLOC_CAP_SPIRAM));
+                if (!rgb) {
+                    ESP_LOGE(TAG, "no memory for the RGB frame");
+                    break;
+                }
+            }
+            yuv422_to_rgb888_half(yuv, rgb, w, h, lane == 1);
+            if (!detect) {
+                detect = new HumanFaceDetect();
+            }
+            const int64_t t0     = esp_timer_get_time();
+            dl::image::img_t img = {rgb, static_cast<uint16_t>(dw), static_cast<uint16_t>(dh),
+                                    dl::image::DL_IMAGE_PIX_TYPE_RGB888};
+            auto& results    = detect->run(img);
+            const int64_t t1 = esp_timer_get_time();
+            last_detect      = GetHAL().millis();
+            stats.max_backlog = std::max(stats.max_backlog, cores3_audio_rx_backlog_ms());
+            static bool loaded_logged = false;
+            if (!loaded_logged) {
+                loaded_logged = true;
+                log_memory("model loaded");
+            }
+            // The biggest face is the closest one (boxes in detection size).
+            for (const auto& r : results) {
+                if (r.box.size() >= 4 && (!best || r.box_area() > best->box_area())) {
+                    best = &r;
+                }
+            }
+            if (best) {
+                const float x1 = std::clamp(best->box[0], 0, dw) / static_cast<float>(dw);
+                const float y1 = std::clamp(best->box[1], 0, dh) / static_cast<float>(dh);
+                const float x2 = std::clamp(best->box[2], 0, dw) / static_cast<float>(dw);
+                const float y2 = std::clamp(best->box[3], 0, dh) / static_cast<float>(dh);
+                s.kind  = SightKind::Face;
+                s.cx    = (x1 + x2) * 0.5f;
+                s.cy    = (y1 + y2) * 0.5f;
+                s.size  = x2 - x1;
+                s.score = best->score;
+                cues.set_template(x1, y1, x2, y2, taken);
+                ++stats.faces;
+            }
+            det_ms = static_cast<int>((t1 - t0) / 1000);
+            ++stats.frames;
+            stats.sum_det += t1 - t0;
+            stats.max_det = std::max(stats.max_det, t1 - t0);
+        } else {
+            ++stats.cue_frames;
+        }
+        // While the head turns the picture is blurred and the head angles lag: no patch search (and no miss).
+        if (s.kind == SightKind::None && head_still && cues.tracking(now, kTrackHoldMs)) {
+            float cx, cy, quality;
+            if (cues.track(cx, cy, quality)) {
+                s.kind  = SightKind::Track;
+                s.cx    = cx;
+                s.cy    = cy;
+                s.score = quality;
+                ++stats.tracks;
+            } else {
+                ++stats.track_misses;
+            }
+        }
+        if (s.kind == SightKind::None) {
+            float cx, cy, area;
+            if (cues.motion(cx, cy, area)) {
+                s.kind = SightKind::Motion;
+                s.cx   = cx;
+                s.cy   = cy;
+                s.size = area;
+                ++stats.motions;
+            }
         }
         publish(s);
 
-        const int det_ms = static_cast<int>((t1 - t0) / 1000);
         if (box_on && best) {
             show_box(true, best->box[0] * 2, best->box[1] * 2, best->box[2] * 2, best->box[3] * 2, w, best->score,
                      det_ms);
             box_shown = true;
-        } else if (box_shown) {
+        } else if (box_on && s.kind == SightKind::Track) {
+            const int bw = static_cast<int>(w * 0.15f);  // the patch size is not kept here: a fixed box at its centre
+            const int x = static_cast<int>(s.cx * w), y = static_cast<int>(s.cy * h);
+            show_box(true, x - bw / 2, y - bw / 2, x + bw / 2, y + bw / 2, w, s.score, 0, true);
+            box_shown = true;
+        } else if (box_shown && (run_detector || s.kind != SightKind::Track)) {
             show_box(false, 0, 0, 0, 0, 0, 0, 0);
             box_shown = false;
         }
-        ++stats.frames;
-        stats.sum_det += t1 - t0;
-        stats.max_det = std::max(stats.max_det, t1 - t0);
     }
     delete detect;
     heap_caps_free(rgb);
@@ -435,8 +531,9 @@ bool latest(Sighting&)
 {
     return false;
 }
-void keep_running() {}
+void keep_running(bool) {}
 void request_check() {}
+void note_head(uint32_t, int, int, bool) {}
 
 }  // namespace sc::face_probe
 

@@ -3,11 +3,12 @@
  *
  * SPDX-License-Identifier: MIT
  */
-// Face tracking for the idle director (REQ-008): the eyes follow the face the camera sees, and the head turns so
-// the face stays in the middle of the view.
+// Face tracking for the idle director (REQ-008). Every sighting is turned into a direction in the room: the head
+// angle when the frame was taken (from a history of servo polls) plus the angle in the view. The head follows that
+// direction continuously, a little ahead of someone moving; when the person is lost it turns on the way they went,
+// looks back and to the other side, and for two minutes keeps facing where they were instead of looking around.
 #include "idle_director.h"
 #include "sc_settings.h"
-#include <hal/sc/face_probe.h>
 #include <mooncake_log.h>
 #include <sdkconfig.h>
 #include <algorithm>
@@ -17,34 +18,56 @@
 
 namespace stackchan::sc {
 
+using ::sc::face_probe::kHalfFovX;
+using ::sc::face_probe::kHalfFovY;
+using ::sc::face_probe::Sighting;
+using ::sc::face_probe::SightKind;
+
 static const std::string_view _tag = "FaceTrack";
 
-// Camera on the head (GC0308, about 66 degrees diagonal, 4:3): half the field of view in degrees.
-static constexpr float kHalfFovX = 27.0f;
-static constexpr float kHalfFovY = 20.5f;
-static constexpr float kPi       = 3.14159265f;
+static constexpr float kPi = 3.14159265f;
 
-static constexpr uint32_t kMovePollMs   = 150;     // each servo read is a bus transaction
-static constexpr uint32_t kSettleMs     = 250;     // after the servos stop, before a frame counts for the head
-static constexpr uint32_t kLostMs       = 4000;    // no face this long: the eyes go back
-static constexpr uint32_t kReleaseMs    = 10000;   // no face this long: glances and head behaviours resume
+// Servo angles are in 0.1 degree: yaw > 0 turns to the robot's right (measured with the gyro, 2026-10-22), pitch > 0
+// is up.
+static constexpr uint32_t kHeadPollMs   = 100;   // each poll reads both servos over the bus
+static constexpr int kMovingDelta       = 6;     // changed more between two polls: the head moves
+static constexpr uint32_t kSettleMs     = 150;   // still this long after a turn: ask for a detection
+static constexpr uint32_t kMaxAgeMs     = 1500;  // older sightings (before a conversation or a doze) are skipped
+static constexpr uint32_t kFollowMs     = 1200;  // placed this recently: following
+static constexpr uint32_t kPresenceMs   = 2 * 60 * 1000;  // someone is probably still here
 static constexpr uint32_t kGreetAfterMs = 2 * 60 * 1000;
-static constexpr uint32_t kHeadLogMs    = 3000;
-static constexpr float kWrongWayDeg     = 3.0f;  // a turn that leaves the face this much further off went wrong
-static constexpr int kWrongWayStrikes   = 2;
-static constexpr uint32_t kStrikeGapMs  = 60 * 1000;      // wrong-way turns count as "in a row" within this
-static constexpr uint32_t kHeadOffMs    = 5 * 60 * 1000;  // head tracking pause after wrong-way turns
-static constexpr uint32_t kMaxAgeMs     = 1500;  // older sightings (from before a conversation or a doze) are skipped
+static constexpr uint32_t kLogMs        = 3000;
 
-static constexpr float kDeadbandDeg = 5.0f;  // closer to the middle than this: the head stays
-static constexpr float kHeadGain    = 0.7f;  // part of the angle the head turns per step (no overshoot)
-static constexpr int kHeadSpeed     = 300;
-static constexpr int kMaxYaw        = 700;   // 0.1 degree; +/-70 of the servo's +/-128
-static constexpr int kMinPitch      = 150;   // within the 5-85 degree safety range
-static constexpr int kMaxPitch      = 750;
-static constexpr int kGazeX         = 70;    // eye offset for a face at the edge of the view
-static constexpr int kGazeY         = 40;
-static constexpr float kGazeSpeed   = 0.25f;  // eye offset units per ms
+// Following
+static constexpr float kDeadband     = 40;     // the head stays when it points closer than this
+static constexpr float kRetarget     = 25;     // a new command when the target moved this much since the last one
+static constexpr uint32_t kCmdGapMs  = 150;
+static constexpr uint32_t kResendMs  = 800;    // same target, not there yet: command again after this
+static constexpr float kLeadS        = 0.35f;  // turn this far ahead of someone moving ...
+static constexpr float kMinLeadSpeed = 40;     // ... faster than this (0.1 degree per second)
+static constexpr float kMaxSpeed     = 400;    // speed estimates are clamped to this
+static constexpr int kMaxYaw         = 700;    // +/-70 of the servo's +/-128
+static constexpr int kMinPitch       = 150;    // within the 5-85 degree safety range
+static constexpr int kMaxPitch       = 750;
+
+// Searching
+static constexpr float kCoastSpeed     = 80;    // lost while moving faster than this: turn on that way
+static constexpr float kEdgeFrac       = 0.6f;  // or last seen this far out (of half the view)
+static constexpr float kCoastMin       = 150;
+static constexpr float kCoastMax       = 300;
+static constexpr float kSweep          = 150;   // the other side
+static constexpr uint32_t kDwellMs     = 1500;  // look this long at each search stop
+static constexpr uint32_t kHoldMs      = 4000;  // lost in the middle: wait this long before "searched"
+static constexpr uint32_t kMotionGapMs = 2500;
+static constexpr float kMotionMinArea  = 0.003f;
+static constexpr float kMotionMaxArea  = 0.3f;
+static constexpr uint32_t kLookBackMs  = 5000;
+static constexpr float kLookBackOff    = 100;  // pointing further than this from where someone was: turn back
+
+// Eyes
+static constexpr int kGazeX       = 70;  // eye offset for someone at the edge of the view
+static constexpr int kGazeY       = 40;
+static constexpr float kGazeSpeed = 0.25f;  // eye offset units per ms
 
 // Angle between the camera axis and a point of the frame, in degrees; frac 0..1 across the frame.
 static float view_angle(float frac, float half_fov)
@@ -57,12 +80,15 @@ static int approach(int value, int target, int step)
     return value < target ? std::min(value + step, target) : std::max(value - step, target);
 }
 
-// cur + delta within [lo, hi], but never a move against delta (the head may stand outside the range already, e.g.
-// still at the sleep pitch after being picked up).
-static int step_within(int cur, int delta, int lo, int hi)
+// Servo speed for a turn of err (0.1 degree): calm for small corrections, quick for big jumps.
+static int turn_speed(float err)
 {
-    const int target = std::clamp(cur + delta, lo, hi);
-    return (delta > 0 && target < cur) || (delta < 0 && target > cur) ? cur : target;
+    return std::clamp(static_cast<int>(err / 10.0f * 25.0f), 180, 500);
+}
+
+static const char* side(int dir)
+{
+    return dir > 0 ? "right" : "left";
 }
 
 void IdleDirectorModifier::update_face_track(Modifiable& sc, uint32_t now)
@@ -71,48 +97,51 @@ void IdleDirectorModifier::update_face_track(Modifiable& sc, uint32_t now)
     auto& settings   = ScSettings::get();
     const bool track = settings.enabled(SettingId::FaceTrack);
     const bool awake = _phase == Phase::Awake && !_sleep_pose;
-    if (awake && (track || settings.enabled(SettingId::FaceBox))) {
-        ::sc::face_probe::keep_running();
-    }
     if (!track || !awake) {
+        if (awake && settings.enabled(SettingId::FaceBox)) {
+            ::sc::face_probe::keep_running();
+        }
         end_face_track(now);
         step_gaze(sc, now);
         return;
     }
-
-    // Frames count for the head only when it stood still while they were taken.
-    if (now >= _next_move_poll) {
-        _next_move_poll = now + kMovePollMs;
-        if (sc.motion().isMoving()) {
-            _head_still_since = 0;
-        } else if (_head_still_since == 0) {
-            _head_still_since = now;
-        }
-    }
-    if (_face_check_pending && _head_still_since && now - _head_still_since >= kSettleMs) {
-        _face_check_pending = false;
-        ::sc::face_probe::request_check();  // look again right away instead of at the idle rate
+    ::sc::face_probe::keep_running(!_face_tracking && person_present(now));  // lost: motion frames too
+    poll_head(sc, now);
+    if (_check_on_settle && _head_still_since && now - _head_still_since >= kSettleMs) {
+        _check_on_settle = false;
+        ::sc::face_probe::request_check();  // look right away instead of at the idle rate
     }
 
-    ::sc::face_probe::Sighting s;
+    Sighting s;
     if (::sc::face_probe::latest(s) && s.seq != _face_seq) {
         _face_seq = s.seq;
-        if (static_cast<int32_t>(now - s.at) > static_cast<int32_t>(kMaxAgeMs)) {
-            // from before this director (a conversation) or before a doze
-        } else if (s.found) {
-            on_face_sighting(sc, s.cx, s.cy, s.at, now);
-        } else if (_face_turned && frame_still(s.at)) {
-            // No face right after a turn says nothing about its direction (people move, detection misses one now
-            // and then; counting it paused head tracking on the first morning test, 2026-10-22).
-            _face_turned = false;
+        if (static_cast<int32_t>(now - s.at) <= static_cast<int32_t>(kMaxAgeMs)) {
+            on_sighting(sc, s, now);
         }
     }
 
-    if (_face_tracking && now - _face_seen_at > kLostMs) {
-        _gaze_tx = _gaze_ty = 0;
+    if (_face_tracking && static_cast<int32_t>(now - _person_at) > static_cast<int32_t>(kFollowMs)) {
+        _face_tracking = false;
+        _seek          = Seek::None;  // seek() decides what to do
+        mclog::tagInfo(_tag, "lost (moving {:.0f} deg/s, last {:.1f} degrees off)", _person_vyaw / 10.0f, _person_ex);
     }
-    if (_face_tracking && now - _face_seen_at > kReleaseMs) {
-        end_face_track(now);
+    if (_face_tracking) {
+        follow(sc, now);
+        // Eyes on the person while the head catches up.
+        const auto& mood = GetIdleMood();
+        const float ox   = (mood.faceYaw - _head_yaw) / 10.0f;      // degrees, > 0: to the robot's right
+        const float oy   = (_head_pitch - mood.facePitch) / 10.0f;  // > 0: below
+        // The screen faces the user: the robot's right is the screen's left.
+        _gaze_tx = -static_cast<int>(std::lround(std::clamp(ox / kHalfFovX, -1.0f, 1.0f) * kGazeX));
+        _gaze_ty = static_cast<int>(std::lround(std::clamp(oy / kHalfFovY, -1.0f, 1.0f) * kGazeY));
+    } else {
+        _gaze_tx = _gaze_ty = 0;
+        if (person_present(now)) {
+            seek(sc, now);
+            look_back(sc, now);
+        } else {
+            _seek = Seek::None;
+        }
     }
     step_gaze(sc, now);
 #else
@@ -121,12 +150,102 @@ void IdleDirectorModifier::update_face_track(Modifiable& sc, uint32_t now)
 #endif
 }
 
-void IdleDirectorModifier::on_face_sighting(Modifiable& sc, float cx, float cy, uint32_t taken, uint32_t now)
+// Servo angles every 100 ms: the history turns frame times into head angles, the probe gets them for the patch
+// search and to tell motion from the picture moving with the head.
+void IdleDirectorModifier::poll_head(Modifiable& sc, uint32_t now)
+{
+    if (now < _next_head_poll) {
+        return;
+    }
+    _next_head_poll   = now + kHeadPollMs;
+    const auto angles = sc.motion().getCurrentAngles();
+    const bool moving = _head_len > 0 && (std::abs(angles.x - _head_yaw) > kMovingDelta ||
+                                          std::abs(angles.y - _head_pitch) > kMovingDelta);
+    _head_yaw             = angles.x;
+    _head_pitch           = angles.y;
+    _head_hist[_head_pos] = {now, static_cast<int16_t>(angles.x), static_cast<int16_t>(angles.y)};
+    _head_pos             = static_cast<uint8_t>((_head_pos + 1) % _head_hist.size());
+    _head_len             = static_cast<uint8_t>(std::min<size_t>(_head_len + 1, _head_hist.size()));
+    if (moving || now - _last_cmd_at < 300) {  // a fresh command may not have started the servos yet
+        _head_still_since = 0;
+    } else if (_head_still_since == 0) {
+        _head_still_since = now;
+    }
+    ::sc::face_probe::note_head(now, angles.x, angles.y, _head_still_since == 0);
+}
+
+bool IdleDirectorModifier::head_at(uint32_t t, float& yaw, float& pitch) const
+{
+    if (_head_len == 0) {
+        return false;
+    }
+    const size_t cap       = _head_hist.size();
+    const size_t oldest    = (_head_pos + cap - _head_len) % cap;
+    const HeadSample* prev = nullptr;
+    for (size_t k = 0; k < _head_len; ++k) {
+        const HeadSample& h = _head_hist[(oldest + k) % cap];
+        if (static_cast<int32_t>(h.at - t) >= 0) {
+            if (!prev || h.at == prev->at) {
+                yaw   = h.yaw;
+                pitch = h.pitch;
+            } else {
+                const float f = static_cast<float>(t - prev->at) / static_cast<float>(h.at - prev->at);
+                yaw           = prev->yaw + (h.yaw - prev->yaw) * f;
+                pitch         = prev->pitch + (h.pitch - prev->pitch) * f;
+            }
+            return true;
+        }
+        prev = &h;
+    }
+    yaw   = prev->yaw;  // newer than the last poll
+    pitch = prev->pitch;
+    return true;
+}
+
+void IdleDirectorModifier::on_sighting(Modifiable& sc, const Sighting& s, uint32_t now)
+{
+    float head_yaw, head_pitch;
+    if (s.kind == SightKind::None || !head_at(s.at, head_yaw, head_pitch)) {
+        return;
+    }
+    // Positive: right of / below the camera axis.
+    const float ex    = view_angle(s.cx, kHalfFovX);
+    const float ey    = view_angle(s.cy, kHalfFovY);
+    const float yaw   = head_yaw + ex * 10.0f;
+    const float pitch = head_pitch - ey * 10.0f;
+    if (s.kind == SightKind::Face || s.kind == SightKind::Track) {
+        place_person(sc, s, yaw, pitch, ex, now);
+        return;
+    }
+    // Motion while someone was here a moment ago and is not seen now: perhaps them, turn there and look.
+    if (_face_tracking || !person_present(now) || now < _next_motion_turn || s.size < kMotionMinArea ||
+        s.size > kMotionMaxArea || _seek == Seek::Coast) {
+        return;
+    }
+    if (head_turn(sc, yaw, pitch, 250, now)) {
+        _next_motion_turn = now + kMotionGapMs;
+        _seek             = Seek::Hold;
+        _seek_until       = now + kHoldMs;
+        _check_on_settle  = true;
+        mclog::tagInfo(_tag, "motion {:.1f} / {:.1f} degrees off ({:.1f} % of the view): turning there", ex, ey,
+                       s.size * 100.0f);
+    }
+}
+
+void IdleDirectorModifier::place_person(Modifiable& sc, const Sighting& s, float yaw, float pitch, float ex,
+                                        uint32_t now)
 {
     auto& mood = GetIdleMood();
     if (!_face_tracking) {
+        if (s.kind != SightKind::Face) {
+            return;  // a tracked patch only keeps following going, it does not start it
+        }
         const uint32_t last_seen = std::max(mood.lastFaceMs, mood.lastInteractionMs);
-        mclog::tagInfo(_tag, "face found at ({:.2f}, {:.2f})", cx, cy);
+        if (_seek != Seek::None && _person_at) {
+            mclog::tagInfo(_tag, "found again after {} ms", static_cast<int32_t>(s.at - _person_at));
+        } else {
+            mclog::tagInfo(_tag, "face at ({:.2f}, {:.2f}): following", s.cx, s.cy);
+        }
         if ((last_seen == 0 || now - last_seen > kGreetAfterMs) && !_buddy.visible() && !_anim && !_touching) {
             // Someone came back: a glad face (or the happy emotion without the drawn faces).
             if (ScSettings::get().enabled(SettingId::Faces)) {
@@ -136,91 +255,161 @@ void IdleDirectorModifier::on_face_sighting(Modifiable& sc, float cx, float cy, 
             }
             mclog::tagInfo(_tag, "hello again");
         }
+        _person_vyaw = _person_vpitch = 0;
+    } else {
+        // Speed from the last two placements, smoothed (detections jitter by a few degrees).
+        const float dt = static_cast<int32_t>(s.at - _person_at) / 1000.0f;
+        if (dt > 0.1f && dt < 1.5f) {
+            _person_vyaw   = std::clamp(0.6f * _person_vyaw + 0.4f * (yaw - mood.faceYaw) / dt, -kMaxSpeed, kMaxSpeed);
+            _person_vpitch = std::clamp(0.6f * _person_vpitch + 0.4f * (pitch - mood.facePitch) / dt, -kMaxSpeed,
+                                        kMaxSpeed);
+        }
     }
-    _face_tracking   = true;
-    _face_seen_at    = now;
-    mood.lastFaceMs  = now;
+    mood.faceYaw    = yaw;
+    mood.facePitch  = pitch;
+    mood.lastFaceMs = now;
+    _person_at      = s.at;
+    _person_ex      = ex;
+    _face_tracking  = true;
+    _seek           = Seek::None;
     // Looking at someone: no idle glances or head behaviours meanwhile.
     _next_glance = std::max(_next_glance, now + 6000);
     _next_action = std::max(_next_action, now + 20000);
+}
 
-    // Positive: the face is right of / below the camera axis.
-    const float ex = view_angle(cx, kHalfFovX);
-    const float ey = view_angle(cy, kHalfFovY);
-    // The screen faces the user: the robot's right is the screen's left.
-    _gaze_tx = -static_cast<int>(std::lround(std::clamp(ex / kHalfFovX, -1.0f, 1.0f) * kGazeX));
-    _gaze_ty = static_cast<int>(std::lround(std::clamp(ey / kHalfFovY, -1.0f, 1.0f) * kGazeY));
-
-    if (!frame_still(taken)) {
+// Keep the head on the person (a little ahead when they move); the eyes cover what the head has not done yet.
+void IdleDirectorModifier::follow(Modifiable& sc, uint32_t now)
+{
+    if (!face_head_allowed(sc)) {
         return;
     }
-    // The first still frame after a turn: did the face get closer to the middle? A turn the wrong way (a camera or
-    // servo mounted the other way round) would chase the face out of view.
-    if (_face_turned) {
-        _face_turned       = false;
-        const bool wrong_x = std::fabs(_face_turn_ex) >= kDeadbandDeg && ex * _face_turn_ex > 0 &&
-                             std::fabs(ex) > std::fabs(_face_turn_ex) + kWrongWayDeg;
-        const bool wrong_y = std::fabs(_face_turn_ey) >= kDeadbandDeg && ey * _face_turn_ey > 0 &&
-                             std::fabs(ey) > std::fabs(_face_turn_ey) + kWrongWayDeg;
-        note_turn_result(wrong_x || wrong_y, ex, ey, now);
+    const auto& mood = GetIdleMood();
+    float yaw        = mood.faceYaw;
+    float pitch      = mood.facePitch;
+    if (std::fabs(_person_vyaw) > kMinLeadSpeed) {
+        yaw += _person_vyaw * kLeadS;
     }
-    const bool head_off = _face_head_off_until && static_cast<int32_t>(now - _face_head_off_until) < 0;
-    if (head_off || !face_head_allowed(sc) || (std::fabs(ex) < kDeadbandDeg && std::fabs(ey) < kDeadbandDeg)) {
+    if (std::fabs(_person_vpitch) > kMinLeadSpeed) {
+        pitch += _person_vpitch * kLeadS;
+    }
+    yaw             = std::clamp(yaw, static_cast<float>(-kMaxYaw), static_cast<float>(kMaxYaw));
+    pitch           = std::clamp(pitch, static_cast<float>(kMinPitch), static_cast<float>(kMaxPitch));
+    const float err = std::max(std::fabs(yaw - _head_yaw), std::fabs(pitch - _head_pitch));
+    if (err < kDeadband) {
         return;
     }
-    // Servo angles in 0.1 degree: yaw > 0 turns to the robot's right (measured with the gyro: +20 degrees turned
-    // clockwise seen from above), pitch > 0 is up.
-    auto& motion    = sc.motion();
-    const auto cur  = motion.getCurrentAngles();
-    const int yaw   = step_within(cur.x, static_cast<int>(std::lround(ex * 10.0f * kHeadGain)), -kMaxYaw, kMaxYaw);
-    const int pitch = step_within(cur.y, -static_cast<int>(std::lround(ey * 10.0f * kHeadGain)), kMinPitch, kMaxPitch);
-    if (std::abs(yaw - cur.x) < 10 && std::abs(pitch - cur.y) < 10) {
-        return;  // at a limit already
+    const bool retarget = std::fabs(yaw - _cmd_yaw) > kRetarget || std::fabs(pitch - _cmd_pitch) > kRetarget;
+    if (now - _last_cmd_at < kCmdGapMs || (!retarget && now - _last_cmd_at < kResendMs)) {
+        return;
     }
-    motion.moveWithSpeed(yaw, pitch, kHeadSpeed);
-    _servo_busy_until   = std::max(_servo_busy_until, now + 1500);  // the IMU feels the servos: no pick-up meanwhile
-    _head_still_since   = 0;
-    _next_move_poll     = now + kMovePollMs;
-    _face_check_pending = true;
-    _face_turned        = true;
-    _face_turn_ex       = ex;
-    _face_turn_ey       = ey;
-    // The head turns towards the face, so the eyes need less of the way.
-    _gaze_tx = static_cast<int>(std::lround(_gaze_tx * (1.0f - kHeadGain)));
-    _gaze_ty = static_cast<int>(std::lround(_gaze_ty * (1.0f - kHeadGain)));
-    if (now >= _face_head_log_at) {
-        _face_head_log_at = now + kHeadLogMs;
-        mclog::tagInfo(_tag, "head ({}, {}) -> ({}, {}) for a face {:.1f} / {:.1f} degrees off", cur.x, cur.y, yaw,
-                       pitch, ex, ey);
+    if (head_turn(sc, yaw, pitch, turn_speed(err), now) && now >= _face_log_at) {
+        _face_log_at = now + kLogMs;
+        mclog::tagInfo(_tag, "head ({}, {}) -> ({:.0f}, {:.0f}), the person moves {:.0f} / {:.0f} deg/s", _head_yaw,
+                       _head_pitch, yaw, pitch, _person_vyaw / 10.0f, _person_vpitch / 10.0f);
     }
 }
 
-bool IdleDirectorModifier::frame_still(uint32_t taken) const
+// Lost: on the way they went, back to the last place, the other side; or, lost in the middle of the view (turned
+// away, covered), wait there. Each stop asks for a detection once the head has settled.
+void IdleDirectorModifier::seek(Modifiable& sc, uint32_t now)
 {
-    return _head_still_since && static_cast<int32_t>(taken - (_head_still_since + kSettleMs)) >= 0;
+    const auto& mood = GetIdleMood();
+    switch (_seek) {
+        case Seek::None: {
+            if (_person_at == 0 || !ScSettings::get().enabled(SettingId::FaceTrackHead)) {
+                _seek = Seek::Done;  // nothing to search from (a new director): look_back() only
+                break;
+            }
+            const bool moving = std::fabs(_person_vyaw) >= kCoastSpeed;
+            const bool edge   = std::fabs(_person_ex) >= kEdgeFrac * kHalfFovX;
+            if (!moving && !edge) {
+                _seek       = Seek::Hold;
+                _seek_until = now + kHoldMs;
+                mclog::tagInfo(_tag, "lost in the middle of the view: waiting");
+                break;
+            }
+            _seek_dir         = (moving ? _person_vyaw : _person_ex) > 0 ? 1 : -1;
+            const float extra = std::clamp(std::fabs(_person_vyaw) * 0.8f, kCoastMin, kCoastMax);
+            const float pitch = mood.facePitch + std::clamp(_person_vpitch * 0.5f, -100.0f, 100.0f);
+            if (head_turn(sc, mood.faceYaw + _seek_dir * extra, pitch, 450, now)) {
+                _seek            = Seek::Coast;
+                _seek_until      = 0;
+                _check_on_settle = true;
+                mclog::tagInfo(_tag, "lost going {}: turning {:.0f} degrees further", side(_seek_dir), extra / 10.0f);
+            } else {
+                _seek       = Seek::Hold;
+                _seek_until = now + kHoldMs;
+            }
+            break;
+        }
+        case Seek::Hold:
+            if (now >= _seek_until) {
+                _seek = Seek::Done;
+            }
+            break;
+        case Seek::Coast:
+        case Seek::Back:
+        case Seek::Other: {
+            if (_head_still_since == 0) {
+                break;  // still turning
+            }
+            if (_seek_until == 0) {
+                _seek_until = now + kDwellMs;
+                break;
+            }
+            if (now < _seek_until || !face_head_allowed(sc)) {
+                break;
+            }
+            const Seek next = _seek == Seek::Coast ? Seek::Back : _seek == Seek::Back ? Seek::Other : Seek::Done;
+            const float yaw = next == Seek::Other ? mood.faceYaw - _seek_dir * kSweep : mood.faceYaw;
+            if (head_turn(sc, yaw, mood.facePitch, 350, now)) {
+                _seek            = next;
+                _seek_until      = 0;
+                _check_on_settle = true;
+                mclog::tagInfo(_tag, "{}",
+                               next == Seek::Back    ? "searching: back where they were"
+                               : next == Seek::Other ? "searching: the other side"
+                                                     : "searched: facing where they were");
+            }
+            break;
+        }
+        case Seek::Done:
+            break;
+    }
 }
 
-// Wrong-way turns in a row (the face further off on the same side on the first still frame after a turn, within a
-// minute of each other) pause head tracking; a turn that brought the face closer clears the count.
-void IdleDirectorModifier::note_turn_result(bool wrong, float ex, float ey, uint32_t now)
+// Someone was here in the last two minutes: when something else turned the head away (a reaction, a conversation),
+// turn back to where they were, now and then.
+void IdleDirectorModifier::look_back(Modifiable& sc, uint32_t now)
 {
-    if (!wrong) {
-        _face_wrong_way = 0;
+    if ((_seek != Seek::Done && _seek != Seek::Hold) || now < _next_look_back || !face_head_allowed(sc)) {
         return;
     }
-    if (_face_wrong_way > 0 && now - _face_wrong_at > kStrikeGapMs) {
-        _face_wrong_way = 0;  // the last one was too long ago to tell a pattern
+    const auto& mood = GetIdleMood();
+    if (std::fabs(mood.faceYaw - _head_yaw) <= kLookBackOff && std::fabs(mood.facePitch - _head_pitch) <= kLookBackOff) {
+        return;
     }
-    ++_face_wrong_way;
-    _face_wrong_at = now;
-    mclog::tagInfo(_tag, "turn for a face {:.1f} / {:.1f} degrees off left it at {:.1f} / {:.1f} ({} of {})",
-                   _face_turn_ex, _face_turn_ey, ex, ey, _face_wrong_way, kWrongWayStrikes);
-    if (_face_wrong_way >= kWrongWayStrikes) {
-        _face_wrong_way      = 0;
-        _face_head_off_until = (now + kHeadOffMs) | 1;
-        mclog::tagWarn(_tag, "{} turns in a row left the face further off: head tracking paused for {} min",
-                       kWrongWayStrikes, kHeadOffMs / 60000);
+    if (head_turn(sc, mood.faceYaw, mood.facePitch, 200, now)) {
+        _next_look_back  = now + kLookBackMs;
+        _check_on_settle = true;
+        mclog::tagInfo(_tag, "looking back to where someone was ({:.0f}, {:.0f})", mood.faceYaw, mood.facePitch);
     }
+}
+
+bool IdleDirectorModifier::head_turn(Modifiable& sc, float yaw, float pitch, int speed, uint32_t now)
+{
+    if (!face_head_allowed(sc)) {
+        return false;
+    }
+    const int y = std::clamp(static_cast<int>(std::lround(yaw)), -kMaxYaw, kMaxYaw);
+    const int p = std::clamp(static_cast<int>(std::lround(pitch)), kMinPitch, kMaxPitch);
+    sc.motion().moveWithSpeed(y, p, speed);
+    _cmd_yaw          = static_cast<float>(y);
+    _cmd_pitch        = static_cast<float>(p);
+    _last_cmd_at      = now;
+    _head_still_since = 0;
+    _servo_busy_until = std::max(_servo_busy_until, now + 1500);  // the IMU feels the servos: no pick-up meanwhile
+    return true;
 }
 
 bool IdleDirectorModifier::face_head_allowed(Modifiable& sc) const
@@ -234,15 +423,26 @@ bool IdleDirectorModifier::face_head_allowed(Modifiable& sc) const
     return !head_busy && !anim_busy && GetHAL().millis() >= _paused_until && !sc.motion().isModifyLocked();
 }
 
+bool IdleDirectorModifier::person_present(uint32_t now) const
+{
+#if CONFIG_SC_FACE_PROBE
+    const uint32_t at = GetIdleMood().lastFaceMs;
+    return at != 0 && ScSettings::get().enabled(SettingId::FaceTrack) && now - at < kPresenceMs;
+#else
+    (void)now;
+    return false;
+#endif
+}
+
 void IdleDirectorModifier::end_face_track(uint32_t now)
 {
     (void)now;
     if (_face_tracking) {
-        mclog::tagInfo(_tag, "face gone");
+        mclog::tagInfo(_tag, "face tracking paused");
     }
-    _face_tracking      = false;
-    _face_check_pending = false;
-    _face_turned        = false;
+    _face_tracking   = false;
+    _seek            = Seek::None;
+    _check_on_settle = false;
     _gaze_tx = _gaze_ty = 0;
 }
 
