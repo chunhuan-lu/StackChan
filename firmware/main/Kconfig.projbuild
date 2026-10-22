@@ -1012,7 +1012,21 @@ menu "StackChan fork options"
 
     comment "Defaults = upstream behaviour. This fork's choices: sdkconfig.defaults.sc"
 
-    menu "OTA and time"
+    menu "Network, OTA and time"
+
+    config SC_OFFLINE_FIRST
+        bool "Offline first: AI Agent mode without a network"
+        default n
+        help
+            Upstream xiaozhi waits for Wi-Fi, the OTA version check and the server connection before the AI
+            Agent reaches standby, and the StackChan board opens App setup (a reboot) when no Wi-Fi is saved
+            or the saved one is not found within 60 s. Offline-only features (faces, face tracking, Claude
+            Code status, settings) are not available meanwhile.
+            When enabled, the AI Agent goes to standby right away; Wi-Fi keeps looking for the saved networks
+            in the background, and the version check and the server connection run quietly once it is
+            connected. Errors while in standby are only logged. A conversation (wake word, screen tap) without
+            a network shows "No network" for a few seconds and stays in standby; with Wi-Fi but no server
+            connection yet, it connects first and then opens the conversation.
 
     config SC_DISABLE_AUTO_OTA
         bool "Disable automatic firmware OTA in AI Agent mode"
@@ -1038,7 +1052,7 @@ menu "StackChan fork options"
             Used until a timezone is chosen in Settings > System. Example for Melbourne with
             daylight saving: AEST-10AEDT,M10.1.0,M4.1.0/3
 
-    endmenu # OTA and time
+    endmenu # Network, OTA and time
 
     menu "Idle behaviour (AI Agent)"
 

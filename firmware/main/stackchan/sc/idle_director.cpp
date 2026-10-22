@@ -700,19 +700,20 @@ void IdleDirectorModifier::poll_light(uint32_t now)
 
 void IdleDirectorModifier::poll_clock(uint32_t now)
 {
+    // Network time, or offline the RTC's (set from the network before and kept by its battery): a year before 2025
+    // means neither ever was.
     bool valid = false;
     int hour   = -1;
-    if (GetHAL().isTimeSynced()) {
-        time_t t = time(nullptr);
-        struct tm local;
-        localtime_r(&t, &local);
-        if (local.tm_year + 1900 >= 2025) {
-            valid = true;
-            hour  = local.tm_hour;
-        }
+    time_t t   = time(nullptr);
+    struct tm local;
+    localtime_r(&t, &local);
+    if (local.tm_year + 1900 >= 2025) {
+        valid = true;
+        hour  = local.tm_hour;
     }
     if (valid != _time_valid || hour != _hour) {
-        mclog::tagInfo(_tag, "local hour {} ({})", hour, valid ? "synced" : "not synced, schedule off");
+        mclog::tagInfo(_tag, "local hour {} ({})", hour,
+                       !valid ? "no time, schedule off" : GetHAL().isTimeSynced() ? "synced" : "RTC");
     }
     _time_valid = valid;
     _hour       = hour;

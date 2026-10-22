@@ -22,6 +22,9 @@ CONFIG_SR_WN_WN9_HISTACKCHAN_TTS3=n
 CONFIG_SC_DISABLE_AUTO_OTA=y
 CONFIG_SC_DISABLE_REMOTE_OTA=y
 
+# The AI Agent works without a network; only a conversation needs it.
+CONFIG_SC_OFFLINE_FIRST=y
+
 # Idle behaviour director (REQ-002): silent, quiet, awake 08:00-23:00 local time.
 CONFIG_SC_DEFAULT_TIMEZONE="AEST-10AEDT,M10.1.0,M4.1.0/3"
 CONFIG_SC_IDLE_DIRECTOR=y

@@ -506,6 +506,7 @@ void StackChanAvatarDisplay::SetTheme(Theme* theme)
 }
 
 #include <hal/board/hal_bridge.h>
+#include <atomic>
 static bool _is_xiaozhi_ready = false;
 static bool _is_xiaozhi_idle  = false;
 bool hal_bridge::is_xiaozhi_ready()
@@ -515,6 +516,43 @@ bool hal_bridge::is_xiaozhi_ready()
 bool hal_bridge::is_xiaozhi_idle()
 {
     return _is_xiaozhi_idle;
+}
+
+static std::atomic<bool> _network_busy{false};
+
+void hal_bridge::set_network_busy(bool busy)
+{
+    _network_busy = busy;
+}
+
+bool hal_bridge::network_busy()
+{
+    return _network_busy;
+}
+
+// [StackChan fork] One notice at a time; a new one replaces it and restarts the timer.
+static lv_timer_t* _notice_timer = nullptr;
+
+void hal_bridge::show_notice(const char* text, uint32_t ms)
+{
+    LvglLockGuard lock;
+    auto& stackchan = GetStackChan();
+    if (!stackchan.hasAvatar()) {
+        return;
+    }
+    stackchan.avatar().setSpeech(text);
+    if (_notice_timer) {
+        lv_timer_delete(_notice_timer);
+    }
+    _notice_timer = lv_timer_create(
+        [](lv_timer_t*) {
+            _notice_timer = nullptr;  // a single run: LVGL deletes it
+            if (GetStackChan().hasAvatar()) {
+                GetStackChan().avatar().clearSpeech();
+            }
+        },
+        ms, nullptr);
+    lv_timer_set_repeat_count(_notice_timer, 1);
 }
 
 void StackChanAvatarDisplay::SetStatus(const char* status)

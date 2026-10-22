@@ -12,6 +12,8 @@
 #include <esp_log.h>
 #include <driver/i2c_master.h>
 #include <wifi_station.h>
+#include <wifi_manager.h>
+#include <ssid_manager.h>
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
 #include <esp_lcd_ili9341.h>
@@ -836,6 +838,18 @@ public:
     // the same BLE App setup flow. Never start the upstream configuration AP.
     void StartWifiConfigMode() override
     {
+#if CONFIG_SC_OFFLINE_FIRST
+        // [StackChan fork] Offline first: stay in the AI Agent without a network. Saved networks: keep looking
+        // for them (the station rescans at a growing interval); none saved: stay offline (Wi-Fi is set up from
+        // the launcher's App setup).
+        if (!SsidManager::GetInstance().GetSsidList().empty()) {
+            ESP_LOGW(TAG, "WiFi not found; staying offline and scanning");
+            WifiManager::GetInstance().StartStation();
+        } else {
+            ESP_LOGW(TAG, "No WiFi saved; staying offline");
+        }
+        return;
+#endif
         ESP_LOGW(TAG, "WiFi setup required; opening StackChan App setup");
         GetHAL().requestAppSetup();
     }

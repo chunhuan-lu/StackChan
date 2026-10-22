@@ -322,13 +322,21 @@ static void probe_task(void*)
             show_box(false, 0, 0, 0, 0, 0, 0, 0);
             box_shown = false;
         }
-        if (rate <= 0 || !recent(s_wanted_at, now) || !hal_bridge::is_xiaozhi_ready() || !hal_bridge::is_xiaozhi_idle()) {
+        // network_busy(): the version check and the server connection need the internal RAM a detection takes.
+        if (rate <= 0 || !recent(s_wanted_at, now) || !hal_bridge::is_xiaozhi_ready() || !hal_bridge::is_xiaozhi_idle() ||
+            hal_bridge::network_busy()) {
             if (box_shown) {
                 show_box(false, 0, 0, 0, 0, 0, 0, 0);
                 box_shown = false;
             }
             s_check = false;
             cues.drop_template();
+            if (detect && hal_bridge::network_busy()) {
+                // The network start (HTTPS, then the server connection) needs the internal RAM the model holds.
+                delete detect;
+                detect = nullptr;
+                log_memory("model unloaded for the network start");
+            }
             vTaskDelay(pdMS_TO_TICKS(kIdleWaitMs));
             continue;
         }
