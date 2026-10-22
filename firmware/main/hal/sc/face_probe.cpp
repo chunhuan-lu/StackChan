@@ -356,42 +356,74 @@ static void probe_task(void*)
             ESP_LOGW(TAG, "no camera, stopping");
             break;
         }
-        if (now - last_grab > kFreshMs) {
-            camera->StreamCaptures();  // drop the frame that waited in the buffer
+        const int w = camera->GetFrameWidth(), h = camera->GetFrameHeight();
+        const int dw = w / 2, dh = h / 2;  // detection size
+        if (run_detector && rgb_size < static_cast<size_t>(dw) * dh * 3) {
+            heap_caps_free(rgb);
+            rgb_size = static_cast<size_t>(dw) * dh * 3;
+            rgb      = static_cast<uint8_t*>(heap_caps_aligned_alloc(16, rgb_size, MALLOC_CAP_SPIRAM));
+            if (!rgb) {
+                ESP_LOGE(TAG, "no memory for the RGB frame");
+                break;
+            }
         }
-        const bool grabbed = camera->StreamCaptures();
-        last_grab          = GetHAL().millis();
+        if (now - last_grab > kFreshMs) {
+            camera->PeekFrame(nullptr);  // hand the frame that waited in the buffer back unread
+        }
+        // Everything that reads the frame runs while the driver's buffer is held: nothing is copied (a copy is
+        // 150 KB through PSRAM, and PSRAM traffic slows the wake word down).
+        uint32_t taken = 0;
+        size_t len     = 0;
+        bool frame_ok = false, flat = false, head_still = false, lane_found = false;
+        FrameLook look{};
+        const bool grabbed = camera->PeekFrame([&](const uint8_t* yuv, size_t size) {
+            taken = GetHAL().millis() - kFrameMs;
+            len   = size;
+            if (w <= 0 || h <= 0 || size < static_cast<size_t>(w) * h * 2) {
+                return;
+            }
+            frame_ok             = true;
+            look                 = look_at(yuv, size);
+            const double var_max = std::max(look.var[0], look.var[1]);
+            if (!lane_known && var_max >= 100 && var_max >= 2 * std::min(look.var[0], look.var[1])) {
+                lane       = look.var[0] >= look.var[1] ? 1 : 0;
+                lane_known = lane_found = true;
+            }
+            flat = var_max < kFlatVar || look.mean[lane == 1 ? 0 : 1] < kDarkLuma;
+            if (flat) {
+                return;
+            }
+            const HeadNote head   = head_note();
+            const bool head_known = static_cast<int32_t>(taken - head.at) < static_cast<int32_t>(kHeadNoteMs);
+            head_still            = head_known && !head.moving;
+            cues.add_frame(yuv, w, h, lane == 1, taken, head.yaw, head.pitch, head_still);
+            if (run_detector) {
+                yuv422_to_rgb888_half(yuv, rgb, w, h, lane == 1);
+            }
+        });
+        last_grab = GetHAL().millis();
         if (!grabbed) {
             vTaskDelay(pdMS_TO_TICKS(kIdleWaitMs));
             continue;
         }
-        const uint32_t taken = last_grab - kFrameMs;
-        const uint8_t* yuv   = camera->GetFrameData();
-        const int w = camera->GetFrameWidth(), h = camera->GetFrameHeight();
-        const size_t len = camera->GetFrameSize();
-        if (!yuv || w <= 0 || h <= 0 || len < static_cast<size_t>(w) * h * 2) {
-            ESP_LOGW(TAG, "unexpected frame: %dx%d, %u bytes, format 0x%08x", w, h, (unsigned)len,
-                     camera->GetFrameFormat());
+        if (!frame_ok) {
+            ESP_LOGW(TAG, "unexpected frame: %dx%d, %u bytes", w, h, (unsigned)len);
             vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
         }
-        const FrameLook look = look_at(yuv, len);
-        const double var_max = std::max(look.var[0], look.var[1]);
         if (first_frame) {
             first_frame = false;
             ESP_LOGI(TAG, "frames: %dx%d, %u bytes, format 0x%08x; even bytes mean %.0f var %.0f, odd %.0f / %.0f", w, h,
                      (unsigned)len, camera->GetFrameFormat(), look.mean[0], look.var[0], look.mean[1], look.var[1]);
         }
-        if (!lane_known && var_max >= 100 && var_max >= 2 * std::min(look.var[0], look.var[1])) {
-            lane       = look.var[0] >= look.var[1] ? 1 : 0;
-            lane_known = true;
+        if (lane_found) {
             ESP_LOGI(TAG, "luma in the %s bytes (variance %.0f / %.0f)", lane == 1 ? "even" : "odd", look.var[0],
                      look.var[1]);
         }
         Sighting s;
         s.seq = ++seq;
         s.at  = taken;
-        if (var_max < kFlatVar || look.mean[lane == 1 ? 0 : 1] < kDarkLuma) {
+        if (flat) {
             if (run_detector) {
                 last_detect = GetHAL().millis();
             }
@@ -401,25 +433,9 @@ static void probe_task(void*)
             continue;
         }
 
-        const HeadNote head = head_note();
-        const bool head_known = static_cast<int32_t>(taken - head.at) < static_cast<int32_t>(kHeadNoteMs);
-        const bool head_still = head_known && !head.moving;
-        cues.add_frame(yuv, w, h, lane == 1, taken, head.yaw, head.pitch, head_still);
-
         const dl::detect::result_t* best = nullptr;
         int det_ms                       = 0;
         if (run_detector) {
-            const int dw = w / 2, dh = h / 2;  // detection size
-            if (rgb_size < static_cast<size_t>(dw) * dh * 3) {
-                heap_caps_free(rgb);
-                rgb_size = static_cast<size_t>(dw) * dh * 3;
-                rgb      = static_cast<uint8_t*>(heap_caps_aligned_alloc(16, rgb_size, MALLOC_CAP_SPIRAM));
-                if (!rgb) {
-                    ESP_LOGE(TAG, "no memory for the RGB frame");
-                    break;
-                }
-            }
-            yuv422_to_rgb888_half(yuv, rgb, w, h, lane == 1);
             if (!detect) {
                 detect = new HumanFaceDetect();
             }

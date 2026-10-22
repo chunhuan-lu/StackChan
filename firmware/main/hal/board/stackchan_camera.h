@@ -1,4 +1,5 @@
 #pragma once
+#include <functional>
 #include "sdkconfig.h"
 
 #ifndef CONFIG_IDF_TARGET_ESP32
@@ -51,6 +52,11 @@ public:
     virtual void SetExplainUrl(const std::string& url, const std::string& token);
     virtual bool Capture() override;
     bool StreamCaptures();
+    // [StackChan fork] The next frame straight from the driver's buffer, without the copy StreamCaptures() makes
+    // (150 KB per frame through PSRAM, which slows the wake word down): use() runs while the buffer is held, then it
+    // goes back to the driver. Sensor layout (no byte swap, no rotation), GetFrameWidth() x GetFrameHeight(); a null
+    // use() just hands the waiting frame back. False if there is no frame.
+    bool PeekFrame(const std::function<void(const uint8_t* data, size_t len)>& use);
 
     // 翻转控制函数
     virtual bool SetHMirror(bool enabled) override;

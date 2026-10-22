@@ -25,7 +25,11 @@ then for the behaviour, with switches in the settings panel.
   detector does not resize). The luma byte lane is checked on the first frame that is not flat; the default is the
   even bytes, as measured on this camera.
 - The DVP driver has one buffer, so the frame waiting in it was taken right after the previous grab. When the last
-  grab is older than 100 ms that frame is dropped and the next one taken; the frame time is the grab end minus 50 ms.
+  grab is older than 100 ms that frame is handed back unread and the next one taken; the frame time is the grab end
+  minus 50 ms.
+- Frames are read straight from the driver's buffer (`StackChanCamera::PeekFrame()`): the statistics, the small
+  frame and the RGB conversion run while the buffer is held, then it goes back. `StreamCaptures()` copies every
+  frame (150 KB) into a new PSRAM buffer, which added enough PSRAM traffic to slow the wake word down.
 - Flat frames (both byte lanes vary less than 30: a dark room gives a uniform black level, not 0) and frames darker
   than a mean luma of 40 (the black level is about 28) are not run through the detector (no face to find, and detection costs the wake word time,
   see below).
@@ -96,7 +100,7 @@ The idle director owns it, so it never fights the other idle behaviours for the 
   move turned clockwise seen from above (peak -45.8 deg/s), the way back +42.6 deg/s. The upstream comment on
   `Motion::lookAtPoint` says the opposite; the voice tool ("-128 as your left") agrees with the measurement, and so
   did the first test with a face.
-- **Lost** (no face or patch for 1.2 s): moving faster than 8 deg/s or last seen in the outer 40 % of the view, the
+- **Lost** (no face or patch for 2.5 s; detections can wait up to 2 s for the wake word): moving faster than 8 deg/s or last seen in the outer 40 % of the view, the
   head turns 15-30 degrees further that way, then back to the last place, then 15 degrees to the other side, looking
   1.5 s at each stop (with a detection once settled). Lost in the middle (turned away, covered): it waits there 4 s.
   Motion during the search (0.3-30 % of the view) turns the head towards it, at most every 2.5 s.
@@ -192,6 +196,7 @@ frame must be announced on the screen first.
 |---|---|
 | `main/hal/sc/face_probe.*` | Detection task, `Sighting`, `keep_running()`, `request_check()`, `note_head()` |
 | `main/hal/sc/frame_cues.*` | Small frames, patch tracking, motion |
+| `main/hal/board/stackchan_camera.*` | `PeekFrame()`: a frame from the driver's buffer without a copy |
 | `main/stackchan/sc/idle_director_face.cpp`, `idle_director.*` | Tracking behaviour, gaze, wrong-way guard, sleep switch |
 | `main/hal/board/cores3_audio_codec.*` | Microphone buffer and pump, lost-audio counter |
 | `main/hal/hal_imu.cpp`, `hal.h` | `watchImuTurn()` |

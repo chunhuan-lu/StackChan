@@ -851,6 +851,32 @@ bool StackChanCamera::Capture()
     return true;
 }
 
+bool StackChanCamera::PeekFrame(const std::function<void(const uint8_t* data, size_t len)>& use)
+{
+    if (encoder_thread_.joinable()) {
+        encoder_thread_.join();
+    }
+    if (!streaming_on_ || video_fd_ < 0) {
+        return false;
+    }
+    struct v4l2_buffer buf = {};
+    buf.type               = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    buf.memory             = V4L2_MEMORY_MMAP;
+    if (ioctl(video_fd_, VIDIOC_DQBUF, &buf) != 0) {
+        ESP_LOGE(TAG, "VIDIOC_DQBUF failed");
+        return false;
+    }
+    if (use) {
+        use(static_cast<const uint8_t*>(mmap_buffers_[buf.index].start),
+            MIN(static_cast<size_t>(buf.bytesused), mmap_buffers_[buf.index].length));
+    }
+    if (ioctl(video_fd_, VIDIOC_QBUF, &buf) != 0) {
+        ESP_LOGE(TAG, "VIDIOC_QBUF failed");
+        return false;
+    }
+    return true;
+}
+
 bool StackChanCamera::StreamCaptures()
 {
     if (encoder_thread_.joinable()) {
