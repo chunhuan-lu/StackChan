@@ -39,12 +39,17 @@ static constexpr uint32_t kGreetAfterMs = 2 * 60 * 1000;
 static constexpr uint32_t kLogMs        = 3000;
 
 // Following
-static constexpr float kDeadband     = 40;     // the head stays when it points closer than this
+// Small offsets are for the eyes (they reach the edge of the view); the head follows bigger ones, so it keeps still
+// while someone sits and types (detections and the tracked patch disagree by a few degrees).
+static constexpr float kDeadbandYaw   = 80;
+static constexpr float kDeadbandPitch = 60;
+static constexpr float kFaceWeight    = 0.6f;   // a placement moves the person this much towards the new position:
+static constexpr float kTrackWeight   = 0.35f;  // detections are trusted more than the tracked patch
 static constexpr float kRetarget     = 25;     // a new command when the target moved this much since the last one
 static constexpr uint32_t kCmdGapMs  = 150;
 static constexpr uint32_t kResendMs  = 800;    // same target, not there yet: command again after this
 static constexpr float kLeadS        = 0.35f;  // turn this far ahead of someone moving ...
-static constexpr float kMinLeadSpeed = 40;     // ... faster than this (0.1 degree per second)
+static constexpr float kMinLeadSpeed = 100;    // ... faster than this (0.1 degree per second): walking, not fidgeting
 static constexpr float kMaxSpeed     = 400;    // speed estimates are clamped to this
 static constexpr int kMaxYaw         = 700;    // +/-70 of the servo's +/-128
 static constexpr int kMinPitch       = 150;    // within the 5-85 degree safety range
@@ -61,6 +66,8 @@ static constexpr uint32_t kHoldMs      = 4000;  // lost in the middle: wait this
 static constexpr uint32_t kMotionGapMs = 2500;
 static constexpr float kMotionMinArea  = 0.003f;
 static constexpr float kMotionMaxArea  = 0.3f;
+static constexpr float kOwnMotionYaw   = 200;  // motion within this of where the face was, and below it, is their
+static constexpr float kOwnMotionBelow = 50;   // own hands or body (typing)
 static constexpr uint32_t kLookBackMs  = 5000;
 static constexpr float kLookBackOff    = 100;  // pointing further than this from where someone was: turn back
 
@@ -217,9 +224,15 @@ void IdleDirectorModifier::on_sighting(Modifiable& sc, const Sighting& s, uint32
         place_person(sc, s, yaw, pitch, ex, now);
         return;
     }
-    // Motion while someone was here a moment ago and is not seen now: perhaps them, turn there and look.
+    // Motion while someone was here a moment ago and is not seen now: perhaps them, turn there and look. Not while
+    // they were lost in the middle of the view (looking down, turned away: they are still there), and not just below
+    // where their face was (their hands on the keyboard).
     if (_face_tracking || !person_present(now) || now < _next_motion_turn || s.size < kMotionMinArea ||
-        s.size > kMotionMaxArea || _seek == Seek::Coast) {
+        s.size > kMotionMaxArea || _seek == Seek::Coast || _seek == Seek::Hold) {
+        return;
+    }
+    const auto& mood = GetIdleMood();
+    if (std::fabs(yaw - mood.faceYaw) < kOwnMotionYaw && pitch < mood.facePitch - kOwnMotionBelow) {
         return;
     }
     if (head_turn(sc, yaw, pitch, 250, now)) {
@@ -257,8 +270,12 @@ void IdleDirectorModifier::place_person(Modifiable& sc, const Sighting& s, float
         }
         _person_vyaw = _person_vpitch = 0;
     } else {
-        // Speed from the last two placements, smoothed (detections jitter by a few degrees).
-        const float dt = static_cast<int32_t>(s.at - _person_at) / 1000.0f;
+        // Smoothed position (detections jitter by a few degrees, the tracked patch drifts), and the speed from the
+        // smoothed positions.
+        const float weight = s.kind == SightKind::Face ? kFaceWeight : kTrackWeight;
+        yaw                = mood.faceYaw + weight * (yaw - mood.faceYaw);
+        pitch              = mood.facePitch + weight * (pitch - mood.facePitch);
+        const float dt     = static_cast<int32_t>(s.at - _person_at) / 1000.0f;
         if (dt > 0.1f && dt < 1.5f) {
             _person_vyaw   = std::clamp(0.6f * _person_vyaw + 0.4f * (yaw - mood.faceYaw) / dt, -kMaxSpeed, kMaxSpeed);
             _person_vpitch = std::clamp(0.6f * _person_vpitch + 0.4f * (pitch - mood.facePitch) / dt, -kMaxSpeed,
@@ -294,10 +311,11 @@ void IdleDirectorModifier::follow(Modifiable& sc, uint32_t now)
     }
     yaw             = std::clamp(yaw, static_cast<float>(-kMaxYaw), static_cast<float>(kMaxYaw));
     pitch           = std::clamp(pitch, static_cast<float>(kMinPitch), static_cast<float>(kMaxPitch));
-    const float err = std::max(std::fabs(yaw - _head_yaw), std::fabs(pitch - _head_pitch));
-    if (err < kDeadband) {
+    const float err_yaw = std::fabs(yaw - _head_yaw), err_pitch = std::fabs(pitch - _head_pitch);
+    if (err_yaw < kDeadbandYaw && err_pitch < kDeadbandPitch) {
         return;
     }
+    const float err = std::max(err_yaw, err_pitch);
     const bool retarget = std::fabs(yaw - _cmd_yaw) > kRetarget || std::fabs(pitch - _cmd_pitch) > kRetarget;
     if (now - _last_cmd_at < kCmdGapMs || (!retarget && now - _last_cmd_at < kResendMs)) {
         return;

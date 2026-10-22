@@ -92,9 +92,11 @@ The idle director owns it, so it never fights the other idle behaviours for the 
 - **Directions in the room**: the director reads both servo angles every 100 ms and keeps the last 2.4 s. Each
   sighting becomes a direction: the head angle at the frame time (interpolated) plus the angle in the view. So frames
   taken while the head turns count as well, and errors do not add up from step to step.
-- **Head** (`face_head`): follows that direction continuously, 0.35 s ahead of someone moving faster than 4 deg/s
-  (speed from the last placements, smoothed), when the head points more than 4 degrees away; the servo speed grows
-  with the distance (180-500). Yaw within +/-70 degrees, pitch within 15-75 degrees (inside the 5-85 degree safety
+- **Head** (`face_head`): follows that direction, 0.35 s ahead of someone moving faster than 10 deg/s, when the head
+  points more than 8 degrees (sideways) or 6 degrees (up and down) away; smaller offsets are left to the eyes, so the
+  head keeps still while someone sits and types. The servo speed grows with the distance (180-500). Each placement
+  moves the person 60 % (a detection) or 35 % (the tracked patch) of the way to the new position, which filters the
+  few degrees the two disagree by; the speed comes from these smoothed positions. Yaw within +/-70 degrees, pitch within 15-75 degrees (inside the 5-85 degree safety
   range). A tracked patch keeps following going but does not start it (a face has to be detected first).
 - **Direction**: positive yaw turns to the robot's right. Measured with the gyro on 2026-10-22: a +20 degree yaw
   move turned clockwise seen from above (peak -45.8 deg/s), the way back +42.6 deg/s. The upstream comment on
@@ -102,8 +104,10 @@ The idle director owns it, so it never fights the other idle behaviours for the 
   did the first test with a face.
 - **Lost** (no face or patch for 2.5 s; detections can wait up to 2 s for the wake word): moving faster than 8 deg/s or last seen in the outer 40 % of the view, the
   head turns 15-30 degrees further that way, then back to the last place, then 15 degrees to the other side, looking
-  1.5 s at each stop (with a detection once settled). Lost in the middle (turned away, covered): it waits there 4 s.
-  Motion during the search (0.3-30 % of the view) turns the head towards it, at most every 2.5 s.
+  1.5 s at each stop (with a detection once settled). Lost in the middle (turned away, looking down, covered): it
+  waits there 4 s, without reacting to motion (they are still there; the motion is their own hands). Motion during
+  the search or afterwards (0.3-30 % of the view) turns the head towards it, at most every 2.5 s, unless it is just
+  below where the face was (hands on the keyboard).
 - **Someone here**: for 2 minutes after the last face or patch the robot does no head-look or nod-off behaviour, and
   when something else turned the head away (a reaction, a conversation) it turns back to where they were, at most
   every 5 s. The place is kept in the idle mood, so it survives a conversation.
