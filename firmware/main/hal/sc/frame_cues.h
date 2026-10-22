@@ -38,6 +38,8 @@ public:
     bool track(float& cx, float& cy, float& quality);
     // A template younger than hold_ms (since the last set_template) is there.
     bool tracking(uint32_t now, uint32_t hold_ms) const;
+    // Where the patch was found last (centre, 0..1); false without a template.
+    bool tracked_centre(float& cx, float& cy) const;
     void drop_template();
 
 private:

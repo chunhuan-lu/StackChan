@@ -315,6 +315,7 @@ private:
     Seek _seek                 = Seek::None;
     uint32_t _seek_until       = 0;
     int _seek_dir              = 0;  // +1: the robot's right
+    bool _lost_at_edge         = false;  // lost while moving or near the edge of the view: motion may be them
     bool _check_on_settle      = false;  // ask for a detection once the head has settled
     uint32_t _next_motion_turn = 0;
     uint32_t _next_look_back   = 0;

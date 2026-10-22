@@ -22,6 +22,8 @@ void start();
 // Camera on the head (GC0308, about 66 degrees diagonal, 4:3): half the field of view in degrees.
 constexpr float kHalfFovX = 27.0f;
 constexpr float kHalfFovY = 20.5f;
+// Faces the detector scores below this are weak (turned aside, looking down): taken only near the person.
+constexpr float kStrongScore = 0.5f;
 
 enum class SightKind : uint8_t {
     None,    // nothing found in this frame

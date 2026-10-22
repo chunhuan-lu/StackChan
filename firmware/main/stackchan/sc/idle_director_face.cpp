@@ -20,6 +20,7 @@ namespace stackchan::sc {
 
 using ::sc::face_probe::kHalfFovX;
 using ::sc::face_probe::kHalfFovY;
+using ::sc::face_probe::kStrongScore;
 using ::sc::face_probe::Sighting;
 using ::sc::face_probe::SightKind;
 
@@ -30,10 +31,12 @@ static constexpr float kPi = 3.14159265f;
 // Servo angles are in 0.1 degree: yaw > 0 turns to the robot's right (measured with the gyro, 2026-10-22), pitch > 0
 // is up.
 static constexpr uint32_t kHeadPollMs   = 100;   // each poll reads both servos over the bus
-static constexpr int kMovingDelta       = 6;     // changed more between two polls: the head moves
+// Changed more between two polls (0.1 degree): the head moves. Slower turns still let the patch be tracked (its
+// search follows the head angle); motion needs the very same angles in both frames anyway.
+static constexpr int kMovingDelta       = 12;
 static constexpr uint32_t kSettleMs     = 150;   // still this long after a turn: ask for a detection
 static constexpr uint32_t kMaxAgeMs     = 1500;  // older sightings (before a conversation or a doze) are skipped
-static constexpr uint32_t kFollowMs     = 2500;  // placed this recently: following (detections can wait 2 s)
+static constexpr uint32_t kFollowMs     = 3500;  // placed this recently: following (detections can wait 2 s)
 static constexpr uint32_t kPresenceMs   = 2 * 60 * 1000;  // someone is probably still here
 static constexpr uint32_t kGreetAfterMs = 2 * 60 * 1000;
 static constexpr uint32_t kLogMs        = 3000;
@@ -68,6 +71,7 @@ static constexpr uint32_t kHoldMs      = 4000;  // lost in the middle: wait this
 static constexpr uint32_t kMotionGapMs = 2500;
 static constexpr float kMotionMinArea  = 0.003f;
 static constexpr float kMotionMaxArea  = 0.3f;
+static constexpr float kWeakNear       = 120;  // a weak face counts only this close to where the person is
 static constexpr float kOwnMotionYaw   = 200;  // motion within this of where the face was, and below it, is their
 static constexpr float kOwnMotionBelow = 50;   // own hands or body (typing)
 static constexpr uint32_t kLookBackMs  = 5000;
@@ -223,15 +227,24 @@ void IdleDirectorModifier::on_sighting(Modifiable& sc, const Sighting& s, uint32
     const float ey    = view_angle(s.cy, kHalfFovY);
     const float yaw   = head_yaw + ex * 10.0f;
     const float pitch = head_pitch - ey * 10.0f;
+    if (s.kind == SightKind::Face && s.score < kStrongScore) {
+        // A weak face (turned aside, looking down) only where someone was a moment ago; anywhere else it may be
+        // something that only looks like one.
+        const auto& mood = GetIdleMood();
+        if (!person_present(now) || std::fabs(yaw - mood.faceYaw) > kWeakNear ||
+            std::fabs(pitch - mood.facePitch) > kWeakNear) {
+            return;
+        }
+    }
     if (s.kind == SightKind::Face || s.kind == SightKind::Track) {
         place_person(sc, s, yaw, pitch, ex, now);
         return;
     }
-    // Motion while someone was here a moment ago and is not seen now: perhaps them, turn there and look. Not while
-    // they were lost in the middle of the view (looking down, turned away: they are still there), and not just below
-    // where their face was (their hands on the keyboard).
+    // Motion while someone was here a moment ago and is not seen now: perhaps them, turn there and look. Only when
+    // they were lost while moving or near the edge of the view (lost in the middle they are still there: looking
+    // down, turned away), and not just below where their face was (their hands on the keyboard).
     if (_face_tracking || !person_present(now) || now < _next_motion_turn || s.size < kMotionMinArea ||
-        s.size > kMotionMaxArea || _seek == Seek::Coast || _seek == Seek::Hold) {
+        s.size > kMotionMaxArea || _seek == Seek::Coast || _seek == Seek::Hold || !_lost_at_edge) {
         return;
     }
     const auto& mood = GetIdleMood();
@@ -345,6 +358,7 @@ void IdleDirectorModifier::seek(Modifiable& sc, uint32_t now)
             }
             const bool moving = std::fabs(_person_vyaw) >= kCoastSpeed;
             const bool edge   = std::fabs(_person_ex) >= kEdgeFrac * kHalfFovX;
+            _lost_at_edge = moving || edge;  // only then motion may be them going away
             if (!moving && !edge) {
                 _seek       = Seek::Hold;
                 _seek_until = now + kHoldMs;

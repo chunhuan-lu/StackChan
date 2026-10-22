@@ -128,6 +128,16 @@ bool FrameCues::tracking(uint32_t now, uint32_t hold_ms) const
     return _tw > 0 && static_cast<int32_t>(now - _t_set_at) < static_cast<int32_t>(hold_ms);
 }
 
+bool FrameCues::tracked_centre(float& cx, float& cy) const
+{
+    if (_tw == 0) {
+        return false;
+    }
+    cx = (_tx + _tw * 0.5f) / kW;
+    cy = (_ty + _th * 0.5f) / kH;
+    return true;
+}
+
 void FrameCues::drop_template()
 {
     _tw = _th = 0;

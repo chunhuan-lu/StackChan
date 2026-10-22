@@ -21,6 +21,7 @@
 #include <lvgl.h>
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -45,8 +46,16 @@ static constexpr uint32_t kWantedMs     = 2000;
 static constexpr uint32_t kTrackPeriodMs  = 250;
 static constexpr uint32_t kTrackHoldMs    = 4000;
 static constexpr uint32_t kMotionPeriodMs = 400;
-static constexpr uint32_t kCueBacklogMs   = 160;
+static constexpr uint32_t kCueBacklogMs   = 400;  // cue frames read a quarter of a frame in place: light
 static constexpr uint32_t kHeadNoteMs     = 500;  // older head angles are unknown
+// While a face is being tracked, the patch gives the position and a detection only renews it: at most this often.
+static constexpr uint32_t kTrackingDetectMs = 1500;
+// Detector thresholds (two stages, MSR and MNP; the component's default is 0.5 for both). Lower, the detector also
+// finds faces turned aside or looking down; below kStrongScore a face renews the template only near the tracked
+// patch, and the director takes it only near where the person is.
+static constexpr float kMsrScore  = 0.3f;
+static constexpr float kMnpScore  = 0.35f;
+static constexpr float kNearPatch = 0.15f;  // of the frame
 // The DVP camera has one buffer: the frame waiting in it was taken right after the previous grab. Older than this,
 // it is dropped and the next one taken; a frame takes 50 ms at 20 fps.
 static constexpr uint32_t kFreshMs   = 100;
@@ -343,7 +352,9 @@ static void probe_task(void*)
         // Next frame: a detection at the rate, or on request (the head has settled) but never back to back; in
         // between the cheaper cues while a face was just seen (tracking) or the director searches (motion).
         const uint32_t since_detect = now - last_detect, since_grab = now - last_grab;
-        const bool detect_due = since_detect >= 1000u / static_cast<uint32_t>(rate) || (s_check && since_detect >= kMinGapMs);
+        const uint32_t period = cues.tracking(now, kTrackHoldMs) ? std::max(1000u / static_cast<uint32_t>(rate), kTrackingDetectMs)
+                                                                 : 1000u / static_cast<uint32_t>(rate);
+        const bool detect_due = since_detect >= period || (s_check && since_detect >= kMinGapMs);
         const bool cue_due    = (cues.tracking(now, kTrackHoldMs) && since_grab >= kTrackPeriodMs) ||
                              (recent(s_search_at, now) && since_grab >= kMotionPeriodMs);
         const uint32_t backlog  = cores3_audio_rx_backlog_ms();
@@ -446,6 +457,8 @@ static void probe_task(void*)
         if (run_detector) {
             if (!detect) {
                 detect = new HumanFaceDetect();
+                detect->set_score_thr(kMsrScore, 0);
+                detect->set_score_thr(kMnpScore, 1);
             }
             const int64_t t0     = esp_timer_get_time();
             dl::image::img_t img = {rgb, static_cast<uint16_t>(dw), static_cast<uint16_t>(dh),
@@ -459,9 +472,13 @@ static void probe_task(void*)
                 loaded_logged = true;
                 log_memory("model loaded");
             }
-            // The biggest face is the closest one (boxes in detection size).
+            // The biggest face is the closest one (boxes in detection size); a confident one before a weak one.
             for (const auto& r : results) {
-                if (r.box.size() >= 4 && (!best || r.box_area() > best->box_area())) {
+                if (r.box.size() < 4) {
+                    continue;
+                }
+                const bool strong = r.score >= kStrongScore, best_strong = best && best->score >= kStrongScore;
+                if (!best || (strong && !best_strong) || (strong == best_strong && r.box_area() > best->box_area())) {
                     best = &r;
                 }
             }
@@ -475,7 +492,11 @@ static void probe_task(void*)
                 s.cy    = (y1 + y2) * 0.5f;
                 s.size  = x2 - x1;
                 s.score = best->score;
-                cues.set_template(x1, y1, x2, y2, taken);
+                float tx, ty;
+                if (best->score >= kStrongScore ||
+                    (cues.tracked_centre(tx, ty) && std::fabs(tx - s.cx) < kNearPatch && std::fabs(ty - s.cy) < kNearPatch)) {
+                    cues.set_template(x1, y1, x2, y2, taken);
+                }
                 ++stats.faces;
             }
             det_ms = static_cast<int>((t1 - t0) / 1000);

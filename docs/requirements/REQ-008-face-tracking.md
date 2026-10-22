@@ -33,8 +33,13 @@ then for the behaviour, with switches in the settings panel.
 - Flat frames (both byte lanes vary less than 30: a dark room gives a uniform black level, not 0) and frames darker
   than a mean luma of 40 (the black level is about 28) are not run through the detector (no face to find, and detection costs the wake word time,
   see below).
-- Rate: at most `face_probe` checks per second (default 1) while looking for a face; the director can ask for the
+- Rate: at most `face_probe` checks per second (default 1) while looking for a face, at most every 1.5 s while a
+  face is being tracked (the patch gives the position, a detection only renews it); the director can ask for the
   next check at once when the head has settled after a turn, but never closer than 300 ms to the previous one.
+- Thresholds: 0.3 (first stage) and 0.35 (second stage) instead of the component's 0.5, so faces turned aside or
+  looking down are found too. A face below 0.5 is weak: it renews the template only within 15 % of the frame of the
+  tracked patch, and the director takes it only within 12 degrees of where the person is (someone seen in the last
+  2 minutes).
 - Every analysed frame publishes one `Sighting`: sequence number, frame time, kind, centre in 0..1 of the frame
   (camera view, not mirrored), size and score. Kinds, best first: `Face` (the detector's biggest, i.e. closest,
   face), `Track` (that face's patch found again), `Motion`, `None`. A debug overlay draws the box mirrored on the
@@ -56,7 +61,9 @@ copy (4 x 4 blocks from a quarter of the samples) for two cheap cues:
 - **Motion**: while the director searches, a frame every 400 ms; the difference to the previous small frame (both
   taken with the head still at the same angles, means taken out) above 22 levels counts as moved. Fewer than 12
   moved pixels is noise, more than 35 % of the frame a change of the whole picture (exposure).
-- Cue frames wait for the wake word too, but only above 160 ms of backlog.
+- Cue frames wait for the wake word too, but only above 400 ms of backlog (they read a quarter of a frame in place).
+- The head counts as still for the patch search while it turns less than 1.2 degrees per 100 ms poll (the search
+  follows the head angle); motion needs the same angles in both frames.
 
 ### esp-dl and esp-sr in one image
 
@@ -104,12 +111,13 @@ The idle director owns it, so it never fights the other idle behaviours for the 
   move turned clockwise seen from above (peak -45.8 deg/s), the way back +42.6 deg/s. The upstream comment on
   `Motion::lookAtPoint` says the opposite; the voice tool ("-128 as your left") agrees with the measurement, and so
   did the first test with a face.
-- **Lost** (no face or patch for 2.5 s; detections can wait up to 2 s for the wake word): moving faster than 8 deg/s or last seen in the outer 40 % of the view, the
+- **Lost** (no face or patch for 3.5 s): moving faster than 8 deg/s or last seen in the outer 40 % of the view, the
   head turns 15-30 degrees further that way, then back to the last place, then 15 degrees to the other side, looking
   1.5 s at each stop (with a detection once settled). Lost in the middle (turned away, looking down, covered): it
-  waits there 4 s, without reacting to motion (they are still there; the motion is their own hands). Motion during
-  the search or afterwards (0.3-30 % of the view) turns the head towards it, at most every 2.5 s, unless it is just
-  below where the face was (hands on the keyboard).
+  waits there 4 s and does not react to motion afterwards either (they are still there; the motion is their own
+  hands). After a loss while moving or near the edge, motion during the search or afterwards (0.3-30 % of the view)
+  turns the head towards it, at most every 2.5 s, unless it is just below where the face was (hands on the
+  keyboard).
 - **Someone here**: for 2 minutes after the last face or patch the robot does no head-look or nod-off behaviour, and
   when something else turned the head away (a reaction, a conversation) it turns back to where they were, at most
   every 5 s. The place is kept in the idle mood, so it survives a conversation.
