@@ -180,10 +180,14 @@ public:
         _bar->setValue(level);
     }
 
-    void setCharging(bool charging)
+    void setCharging(bool charging, bool plugged = false)
     {
         if (charging) {
             _bar->setBgColor(lv_color_hex(0x19C25F), LV_PART_INDICATOR);
+            _lightning_icon->setHidden(false);
+        } else if (plugged) {
+            // [StackChan fork] USB power present, battery not charging (full): bolt without the green bar.
+            _bar->setBgColor(lv_color_hex(_color_primary), LV_PART_INDICATOR);
             _lightning_icon->setHidden(false);
         } else {
             _bar->setBgColor(lv_color_hex(_color_primary), LV_PART_INDICATOR);
@@ -221,7 +225,7 @@ public:
         auto level = GetHAL().getBatteryLevel();
         _label_level->setText(fmt::format("{}%", level));
         _battery_icon->setLevel(level);
-        _battery_icon->setCharging(GetHAL().isBatteryCharging());
+        _battery_icon->setCharging(GetHAL().isBatteryCharging(), GetHAL().isOnExternalPower());  // [StackChan fork]
     }
 
 private:

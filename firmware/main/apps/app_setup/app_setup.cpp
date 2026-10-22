@@ -149,6 +149,7 @@ void AppSetup::onOpen()
     _menu_page = std::make_unique<view::SelectMenuPage>(_menu_sections);
 
     view::create_home_indicator([&]() { close(); });
+    view::set_home_indicator_will_restart([&]() { return _need_warm_reset; });  // [StackChan fork]
     view::create_status_bar();
 }
 

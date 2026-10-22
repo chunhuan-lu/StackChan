@@ -303,6 +303,20 @@ public:
     void getMicWaveformFrame(std::vector<int16_t>& data);
     void clearupMicTest();
 
+    /* ---------------------------- [StackChan fork] ---------------------------- */
+    // True once SNTP has synchronised the clock during this boot, i.e. local time can be trusted.
+    bool isTimeSynced();
+    // Latest accelerometer sample in m/s^2, refreshed by the IMU task at about 10 Hz.
+    bool getImuAccel(float& x, float& y, float& z);
+    // Log the strongest turn about the vertical (gyro along gravity) over the next ms, in degrees per second,
+    // positive counter-clockwise seen from above: tells which way a head move really went.
+    void watchImuTurn(uint32_t ms);
+    // Ambient light from the LTR-553ALS in lux; the sensor is initialised on first use.
+    bool getAmbientLux(float& lux);
+    // USB power present (debounced VBUS with SC_EXT_POWER_NO_STANDBY). The servos still run from the
+    // battery, which USB recharges.
+    bool isOnExternalPower();
+
 private:
     bool _xiaozhi_start_requested = false;
 

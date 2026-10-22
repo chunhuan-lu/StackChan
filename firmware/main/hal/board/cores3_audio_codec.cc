@@ -1,10 +1,34 @@
 #include "cores3_audio_codec.h"
 
 #include <esp_log.h>
+#include <esp_heap_caps.h>
 #include <driver/i2c_master.h>
 #include <driver/i2s_tdm.h>
+#include <cstring>
 
 #define TAG "CoreS3AudioCodec"
+
+// [StackChan fork] Counts microphone audio lost because the reader fell behind: DMA buffers the I2S driver dropped,
+// and pump chunks that did not fit into the microphone buffer.
+static volatile uint32_t s_rx_overflows = 0;
+static StreamBufferHandle_t s_mic_buf   = nullptr;
+static size_t s_mic_bytes_per_ms        = 1;
+
+static bool IRAM_ATTR on_rx_overflow(i2s_chan_handle_t, i2s_event_data_t*, void*)
+{
+    s_rx_overflows = s_rx_overflows + 1;
+    return false;
+}
+
+uint32_t cores3_audio_rx_overflows()
+{
+    return s_rx_overflows;
+}
+
+uint32_t cores3_audio_rx_backlog_ms()
+{
+    return s_mic_buf ? xStreamBufferBytesAvailable(s_mic_buf) / s_mic_bytes_per_ms : 0;
+}
 
 CoreS3AudioCodec::CoreS3AudioCodec(void* i2c_master_handle, int input_sample_rate, int output_sample_rate,
     gpio_num_t mclk, gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout, gpio_num_t din,
@@ -73,7 +97,55 @@ CoreS3AudioCodec::CoreS3AudioCodec(void* i2c_master_handle, int input_sample_rat
     input_dev_ = esp_codec_dev_new(&dev_cfg);
     assert(input_dev_ != NULL);
 
+    StartMicPump();
     ESP_LOGI(TAG, "CoreS3AudioCodec initialized");
+}
+
+// [StackChan fork] The audio task runs the wake word between its reads; when camera work on the other core slows it
+// down, the six I2S DMA buffers (60 ms) overflow. A high-priority pump on core 1 keeps draining them into a PSRAM
+// buffer that Read() takes from instead.
+void CoreS3AudioCodec::StartMicPump() {
+#if CONFIG_SC_MIC_BUFFER_MS > 0
+    const size_t channels = input_reference_ ? 2 : 1;
+    mic_chunk_bytes_ = output_sample_rate_ / 100 * channels * sizeof(int16_t);  // 10 ms, as the DMA buffers
+    s_mic_bytes_per_ms = mic_chunk_bytes_ / 10;
+    mic_chunk_ = static_cast<int16_t*>(heap_caps_malloc(mic_chunk_bytes_, MALLOC_CAP_SPIRAM));
+    mic_buf_ = xStreamBufferCreateWithCaps(s_mic_bytes_per_ms * CONFIG_SC_MIC_BUFFER_MS, 1, MALLOC_CAP_SPIRAM);
+    mic_dev_lock_ = xSemaphoreCreateMutex();
+    if (!mic_chunk_ || !mic_buf_ || !mic_dev_lock_ ||
+        xTaskCreatePinnedToCoreWithCaps([](void* self) { static_cast<CoreS3AudioCodec*>(self)->MicPump(); }, "mic_pump",
+                                        3072, this, 9, &mic_pump_, 1, MALLOC_CAP_SPIRAM) != pdPASS) {
+        ESP_LOGE(TAG, "mic buffer: no memory, reading the I2S channel directly");
+        if (mic_buf_) {
+            vStreamBufferDeleteWithCaps(mic_buf_);
+            mic_buf_ = nullptr;
+        }
+        return;
+    }
+    s_mic_buf = mic_buf_;
+    ESP_LOGI(TAG, "mic buffer: %d ms", CONFIG_SC_MIC_BUFFER_MS);
+#endif
+}
+
+void CoreS3AudioCodec::MicPump() {
+    while (true) {
+        if (!input_enabled_) {
+            ulTaskNotifyTake(pdTRUE, portMAX_DELAY);  // EnableInput(true) wakes it
+            continue;
+        }
+        xSemaphoreTake(mic_dev_lock_, portMAX_DELAY);
+        const int ret = input_enabled_ ? esp_codec_dev_read(input_dev_, mic_chunk_, mic_chunk_bytes_) : ESP_CODEC_DEV_WRONG_STATE;
+        xSemaphoreGive(mic_dev_lock_);
+        if (ret != ESP_CODEC_DEV_OK) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+        if (xStreamBufferSpacesAvailable(mic_buf_) < mic_chunk_bytes_) {
+            s_rx_overflows = s_rx_overflows + 1;
+            continue;
+        }
+        xStreamBufferSend(mic_buf_, mic_chunk_, mic_chunk_bytes_, 0);
+    }
 }
 
 CoreS3AudioCodec::~CoreS3AudioCodec() {
@@ -177,6 +249,9 @@ void CoreS3AudioCodec::CreateDuplexChannels(gpio_num_t mclk, gpio_num_t bclk, gp
 
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_handle_, &std_cfg));
     ESP_ERROR_CHECK(i2s_channel_init_tdm_mode(rx_handle_, &tdm_cfg));
+    i2s_event_callbacks_t rx_cbs = {};
+    rx_cbs.on_recv_q_ovf         = on_rx_overflow;
+    ESP_ERROR_CHECK(i2s_channel_register_event_callback(rx_handle_, &rx_cbs, nullptr));
     ESP_ERROR_CHECK(i2s_channel_enable(tx_handle_));
     ESP_ERROR_CHECK(i2s_channel_enable(rx_handle_));
     ESP_LOGI(TAG, "Duplex channels created");
@@ -190,6 +265,9 @@ void CoreS3AudioCodec::SetOutputVolume(int volume) {
 void CoreS3AudioCodec::EnableInput(bool enable) {
     if (enable == input_enabled_) {
         return;
+    }
+    if (mic_buf_) {
+        xSemaphoreTake(mic_dev_lock_, portMAX_DELAY);
     }
     if (enable) {
         esp_codec_dev_sample_info_t fs = {
@@ -208,6 +286,15 @@ void CoreS3AudioCodec::EnableInput(bool enable) {
         ESP_ERROR_CHECK(esp_codec_dev_close(input_dev_));
     }
     AudioCodec::EnableInput(enable);
+    if (mic_buf_) {
+        if (enable) {
+            xStreamBufferReset(mic_buf_);  // drop what is left from before; fails harmlessly while Read() waits
+        }
+        xSemaphoreGive(mic_dev_lock_);
+        if (enable) {
+            xTaskNotifyGive(mic_pump_);
+        }
+    }
 }
 
 void CoreS3AudioCodec::EnableOutput(bool enable) {
@@ -232,8 +319,23 @@ void CoreS3AudioCodec::EnableOutput(bool enable) {
 }
 
 int CoreS3AudioCodec::Read(int16_t* dest, int samples) {
-    if (input_enabled_) {
+    if (!input_enabled_) {
+        return samples;
+    }
+    if (!mic_buf_) {
         ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_read(input_dev_, (void*)dest, samples * sizeof(int16_t)));
+        return samples;
+    }
+    auto* out = reinterpret_cast<uint8_t*>(dest);
+    const size_t want = samples * sizeof(int16_t);
+    size_t got = 0;
+    while (got < want) {
+        const size_t n = xStreamBufferReceive(mic_buf_, out + got, want - got, pdMS_TO_TICKS(100));
+        if (n == 0) {  // the input was closed meanwhile
+            memset(out + got, 0, want - got);
+            break;
+        }
+        got += n;
     }
     return samples;
 }

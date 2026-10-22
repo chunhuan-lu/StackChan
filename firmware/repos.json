@@ -18,7 +18,8 @@
         "url": "https://github.com/78/xiaozhi-esp32.git",
         "path": "xiaozhi-esp32",
         "branch": "v2.2.4",
-        "patch": "patches/xiaozhi-esp32.patch"
+        "patch": "patches/xiaozhi-esp32.patch",
+        "extra_patches": ["patches/xiaozhi-esp32-fork.patch"]
     },
     {
         "url": "https://github.com/bblanchon/ArduinoJson.git",

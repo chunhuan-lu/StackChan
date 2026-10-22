@@ -123,5 +123,6 @@ void Hal::setTimezone(std::string_view tz)
 std::string Hal::getTimezone()
 {
     Settings settings("system", false);
-    return settings.GetString("tz", "GMT0");
+    // [StackChan fork] Default comes from Kconfig (upstream: "GMT0"); Settings > System still overrides it.
+    return settings.GetString("tz", CONFIG_SC_DEFAULT_TIMEZONE);
 }

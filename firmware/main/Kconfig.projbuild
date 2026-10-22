@@ -1005,3 +1005,290 @@ menu "BLE prph Configuration"
             Use this option to enable resolving peer's address.
 
 endmenu
+
+# [StackChan fork] Options added by chunhuan-lu/StackChan. Symbols use the SC_ prefix.
+# Defaults keep the upstream behaviour; the fork's own choices are in sdkconfig.defaults.sc.
+menu "StackChan fork options"
+
+    comment "Defaults = upstream behaviour. This fork's choices: sdkconfig.defaults.sc"
+
+    menu "Network, OTA and time"
+
+    config SC_OFFLINE_FIRST
+        bool "Offline first: AI Agent mode without a network"
+        default n
+        help
+            Upstream xiaozhi waits for Wi-Fi, the OTA version check and the server connection before the AI
+            Agent reaches standby, and the StackChan board opens App setup (a reboot) when no Wi-Fi is saved
+            or the saved one is not found within 60 s. Offline-only features (faces, face tracking, Claude
+            Code status, settings) are not available meanwhile.
+            When enabled, the AI Agent goes to standby right away; Wi-Fi keeps looking for the saved networks
+            in the background, and the version check and the server connection run quietly once it is
+            connected. Errors while in standby are only logged. A conversation (wake word, screen tap) without
+            a network shows "No network" for a few seconds and stays in standby; with Wi-Fi but no server
+            connection yet, it connects first and then opens the conversation.
+
+    config SC_DISABLE_AUTO_OTA
+        bool "Disable automatic firmware OTA in AI Agent mode"
+        default n
+        help
+            Upstream xiaozhi installs any newer firmware reported by the OTA server every time the
+            AI Agent mode starts, which would overwrite self-built firmware. When enabled, a newer
+            version is only logged. Manual update from Settings > About is not affected.
+
+    config SC_DISABLE_REMOTE_OTA
+        bool "Disable server-pushed firmware and assets updates"
+        default n
+        help
+            Do not register the user-only MCP tools self.upgrade_firmware and
+            self.assets.set_download_url, through which the server can push a firmware image or
+            an assets package, and ignore an assets download URL that was pushed earlier (it would
+            replace a custom wake word model). Manual update from Settings > About is not affected.
+
+    config SC_DEFAULT_TIMEZONE
+        string "Default timezone (POSIX TZ)"
+        default "GMT0"
+        help
+            Used until a timezone is chosen in Settings > System. Example for Melbourne with
+            daylight saving: AEST-10AEDT,M10.1.0,M4.1.0/3
+
+    endmenu # Network, OTA and time
+
+    menu "Idle behaviour (AI Agent)"
+
+    config SC_IDLE_DIRECTOR
+        bool "Idle behaviour director"
+        default n
+        help
+            Replaces the random idle head motion with a mood-driven director: daily schedule,
+            sleeping in the dark, head-touch and pick-up reactions, screen-only micro animations,
+            drawn faces and a mood light. Silent: it never plays sounds.
+            The values below are defaults; with SC_SETTINGS_PANEL they can be changed on the device.
+
+    if SC_IDLE_DIRECTOR
+
+    config SC_IDLE_WAKE_HOUR
+        int "Wake-up hour (local time)"
+        range 0 23
+        default 8
+
+    config SC_IDLE_SLEEP_HOUR
+        int "Sleep hour (local time)"
+        range 0 23
+        default 23
+
+    config SC_IDLE_HEAD_MOVES_PER_HOUR
+        int "Spontaneous head moves per hour at the default activity level"
+        range 0 120
+        default 20
+        help
+            Servo budget for spontaneous looking around. The idle activity level from the
+            AI Agent settings scales it (0: none, 1: x0.5, 2: x1, 3: x2). Eye movements on the
+            screen are not limited.
+
+    config SC_IDLE_DARK_LUX
+        int "Darkness threshold (lux)"
+        range 0 100
+        default 3
+        help
+            The robot falls asleep after the ambient light stays below this value for one minute.
+            The sensor sits behind the front glass: a desk lamp at night measured 11-16 lux.
+
+    config SC_IDLE_BRIGHT_LUX
+        int "Light-on threshold (lux)"
+        range 1 200
+        default 8
+        help
+            Must be higher than the darkness threshold (hysteresis).
+
+    config SC_IDLE_SLEEP_BACKLIGHT
+        int "Backlight while sleeping in the dark (0-100)"
+        range 0 100
+        default 5
+        help
+            Used while asleep when the room is dark (below SC_IDLE_DARK_LUX) or no light sensor
+            reading is available. The AXP2101 drives the backlight from DLDO1 in 100 mV steps:
+            1-12 = 2.5 V (dimmest), 13-24 = 2.6 V, 25-37 = 2.7 V, 38-49 = 2.8 V, 50-62 = 2.9 V,
+            63-74 = 3.0 V, 75-87 = 3.1 V, 88-99 = 3.2 V, 100 = 3.3 V; 0 switches it off.
+
+    config SC_IDLE_SLEEP_BACKLIGHT_LIT
+        int "Backlight while sleeping with the lights on (0-100)"
+        range 0 100
+        default 45
+        help
+            Used while asleep (night schedule, darkness hold-off or nap) when the ambient light is
+            above SC_IDLE_BRIGHT_LUX. Never brighter than the normal brightness. Same steps as above;
+            Settings > Brightness 30 % / 45 % preview 2.7 V / 2.8 V.
+
+    config SC_IDLE_BACKLIGHT_FADE_MS
+        int "Sleep backlight fade time per 100 mV step (ms, 0 = instant)"
+        range 0 2000
+        default 300
+
+    config SC_IDLE_LED_MAX
+        int "Mood light maximum channel value (0-255)"
+        range 0 255
+        default 24
+
+    config SC_IDLE_FACES
+        bool "Drawn faces (soft smile, special faces, Claude Code faces)"
+        default y
+        help
+            Vector faces drawn over the avatar (REQ-005) instead of the plain dot eyes. Without
+            them, the director uses the upstream eyes and its eye animations only.
+
+    config SC_IDLE_FACE_MIN_MINUTES
+        int "Special idle face: shortest interval (minutes)"
+        range 1 60
+        default 4
+
+    config SC_IDLE_FACE_MAX_MINUTES
+        int "Special idle face: longest interval (minutes)"
+        range 1 60
+        default 10
+        help
+            Now and then a special face (sparkle, wink, peek...) replaces the soft smile for a few
+            seconds, at a random time between the shortest and the longest interval.
+
+    endif # SC_IDLE_DIRECTOR
+
+    endmenu # Idle behaviour
+
+    menu "Power and touch"
+
+    config SC_EXT_POWER_NO_STANDBY
+        bool "No power-save sleep or auto power-off while USB power is present"
+        default n
+        help
+            Detect external power from the AXP2101 VBUS-good flag (debounced) instead of the
+            battery current direction, log the power state at boot and on every change, and keep
+            the upstream power-save timer (sleepy face after 5 min, power-off after the idle
+            shutdown time) off while USB power is present, even if the battery helps out.
+            "Allow auto power off while charging" in the AI Agent settings is still honoured.
+            Note: the servos always run from the battery through the body boost converter; USB
+            only recharges it.
+
+    config SC_TOUCH_FIXES
+        bool "AI Agent touch fixes"
+        default n
+        help
+            A tap on the sleeping face wakes it instead of starting a conversation (with the idle
+            director), a swipe from the bottom edge (the Home gesture) no longer toggles the
+            conversation, the Home button ignores clicks while it slides in or out and shows
+            "Going home..." before the restart, and implausible touch controller samples are dropped.
+
+    endmenu # Power and touch
+
+    menu "Claude Code link"
+
+    config SC_USB_LINK
+        bool "Claude Code status link over the USB port"
+        default n
+        depends on ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG
+        help
+            Receive checksummed JSON-line commands from the PC agent (tools/sc-agent, REQ-003) on
+            the native USB-Serial/JTAG port, next to the normal log output. The idle director shows
+            the Claude Code sessions on the mood LEDs and reacts to their events. Inactive until the
+            agent connects; about 1 KB of internal RAM (buffers and task stack are in PSRAM).
+
+    config SC_CLAUDE_SUIT
+        bool "Pixel buddy suit while Claude Code works"
+        default y
+        depends on SC_USB_LINK && SC_IDLE_DIRECTOR
+        help
+            While a Claude Code session works or waits for the user, the robot puts on an orange pixel
+            buddy costume with a funny transition, and takes it off a while after the last activity
+            (REQ-007). Default of the "claude_suit" setting.
+
+    config SC_CLAUDE_SUIT_COLOR
+        int "Suit colour (0 clay, 1 orange, 2 bright orange, 3 custom)"
+        range 0 3
+        default 1
+        depends on SC_CLAUDE_SUIT
+        help
+            Clay is the Claude brand colour; it looks greyish on the CoreS3 LCD. Custom uses the three
+            values below, which can be tuned on the device to match another screen by eye. Default of
+            the "suit_color" setting.
+
+    config SC_CLAUDE_SUIT_CUSTOM_R
+        int "Custom suit colour: red (0-255)"
+        range 0 255
+        default 217
+        depends on SC_CLAUDE_SUIT
+
+    config SC_CLAUDE_SUIT_CUSTOM_G
+        int "Custom suit colour: green (0-255)"
+        range 0 255
+        default 119
+        depends on SC_CLAUDE_SUIT
+
+    config SC_CLAUDE_SUIT_CUSTOM_B
+        int "Custom suit colour: blue (0-255)"
+        range 0 255
+        default 87
+        depends on SC_CLAUDE_SUIT
+
+    config SC_CLAUDE_SUIT_OFF_MINUTES
+        int "Take the suit off after (minutes without Claude Code activity)"
+        range 1 30
+        default 2
+        depends on SC_CLAUDE_SUIT
+
+    config SC_CLAUDE_SUIT_HEAD
+        bool "Head moves along with the suit transitions"
+        default y
+        depends on SC_CLAUDE_SUIT
+        help
+            Nod when the suit lands, lift the head for the "ta-da", lean back when the steam puffs out and
+            shake the sweat off. Default of the "suit_head" setting.
+
+    config SC_CLAUDE_SUIT_HEAD_SPEED
+        int "Servo speed of those head movements (100-1000)"
+        range 100 1000
+        default 600
+        depends on SC_CLAUDE_SUIT_HEAD
+
+    endmenu # Claude Code link
+
+    menu "Camera"
+
+    config SC_FACE_PROBE
+        bool "Face tracking"
+        default n
+        depends on IDF_TARGET_ESP32S3
+        help
+            REQ-008: while the AI Agent is idle, a low-priority task on core 1 runs ESP-DL face detection on
+            the camera frames; the idle director turns the eyes and the head to the face it finds. Settings
+            panel, "Camera": on/off, head on/off, checks per second and a debug face box. Frames are never
+            stored and never leave the device. Adds about 400 KB of code and model to the app.
+
+    config SC_MIC_BUFFER_MS
+        int "Microphone buffer (ms, 0 = off)"
+        default 0
+        range 0 2000
+        help
+            A high-priority task on core 1 moves the microphone samples from the I2S DMA buffers (60 ms) into a
+            PSRAM buffer of this length, which the audio task reads. Face detection on the other core slows the
+            wake word down for a few hundred milliseconds at a time (PSRAM and cache contention); without the
+            buffer, the DMA buffers overflow and the wake word misses parts of what was said.
+            0 reads the I2S channel directly, as upstream does.
+
+    endmenu # Camera
+
+    menu "Settings"
+
+    config SC_SETTINGS_PANEL
+        bool "Settings panel and voice settings for the fork features"
+        default n
+        help
+            In AI Agent mode, swipe up from the bottom edge and tap the gear next to the Home
+            button: a panel changes the idle activity and, for the features compiled in, the
+            schedule, light thresholds, sleep screen, light brightness, faces, tap to wake, the
+            Claude Code display and standby on USB. The MCP tools self.robot.get_settings and
+            self.robot.set_setting do the same by voice. Values are stored in NVS (namespace
+            "sc_cfg") and clamped to the ranges above; the Kconfig values are the defaults and
+            "Reset to defaults" brings them back. Without this option the Kconfig values are used.
+
+    endmenu # Settings
+
+endmenu

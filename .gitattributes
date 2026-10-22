@@ -1,0 +1,3 @@
+# Keep patch files byte-exact on every platform. With core.autocrlf=true (Git for Windows default)
+# they are checked out with CRLF and fetch_repos.py silently skips them (see upstream issue #62).
+*.patch -text

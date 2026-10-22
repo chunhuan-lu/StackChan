@@ -9,6 +9,7 @@
 #include <mooncake.h>
 #include <apps/apps.h>
 #include <hal/hal.h>
+#include <esp_system.h>
 
 using namespace mooncake;
 using namespace smooth_ui_toolkit;
@@ -18,6 +19,10 @@ extern "C" void app_main(void)
     // Setup logger
     mclog::set_level(mclog::level_info);
     mclog::set_time_format(mclog::time_format_unix_milliseconds);
+
+    // [StackChan fork] Tell a deliberate restart (3 = software, e.g. Home) from a crash
+    // (4 = panic, 5-7 = watchdog, 9 = brownout).
+    mclog::tagInfo("main", "reset reason: {}", static_cast<int>(esp_reset_reason()));
 
     // HAL init
     GetHAL().init();

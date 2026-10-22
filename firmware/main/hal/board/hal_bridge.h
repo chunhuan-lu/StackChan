@@ -50,6 +50,12 @@ void xiaozhi_board_init();
 void start_xiaozhi_app();
 bool is_xiaozhi_ready();
 bool is_xiaozhi_idle();
+// [StackChan fork] A speech bubble that goes away after ms (offline-first notices).
+void show_notice(const char* text, uint32_t ms);
+// [StackChan fork] The network start (version check over HTTPS, the server connection) runs, or may start soon after
+// boot: it needs most of the free internal RAM, so face detection waits meanwhile.
+void set_network_busy(bool busy);
+bool network_busy();
 XiaozhiConfig_t get_xiaozhi_config();
 void set_xiaozhi_config(const XiaozhiConfig_t& config);
 
@@ -57,6 +63,7 @@ i2c_master_bus_handle_t board_get_i2c_bus();
 StackChanCamera* board_get_camera();
 int board_get_battery_level();
 bool board_is_battery_charging();
+bool board_is_on_external_power();  // [StackChan fork]
 void board_set_backlight_brightness(uint8_t brightness, bool permanent = false);
 uint8_t board_get_backlight_brightness();
 void board_set_speaker_volume(uint8_t volume, bool permanent = false);

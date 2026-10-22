@@ -12,6 +12,8 @@
 #include <esp_log.h>
 #include <driver/i2c_master.h>
 #include <wifi_station.h>
+#include <wifi_manager.h>
+#include <ssid_manager.h>
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
 #include <esp_lcd_ili9341.h>
@@ -21,6 +23,11 @@
 #include "stackchan_camera.h"
 #include "hal_bridge.h"
 #include <hal/hal.h>
+#include <memory>
+#if CONFIG_SC_EXT_POWER_NO_STANDBY
+#include <hal/sc/ina226.h>               // [StackChan fork]
+#include <stackchan/sc/sc_settings.h>  // [StackChan fork]
+#endif
 
 #define TAG "M5Stack-StackChan-Board"
 
@@ -183,6 +190,27 @@ public:
         return ESP_OK;
     }
 
+    // [StackChan fork] VBUS-good flag (REG00[5]) and VBUS voltage (REG38[5:0]:REG39, 1 mV/LSB, -1 if
+    // the ADC read fails). Unlike TryReadPowerStatus this does not depend on the battery current.
+    esp_err_t TryReadVbus(bool& vbus_good, int& vbus_mv)
+    {
+        uint8_t status = 0;
+        esp_err_t err  = TryReadRegs(0x00, &status, 1);
+        if (err != ESP_OK) {
+            return err;
+        }
+        vbus_good = (status & 0b00100000) != 0;
+
+        uint8_t high = 0;
+        uint8_t low  = 0;
+        if (TryReadRegs(0x38, &high, 1) == ESP_OK && TryReadRegs(0x39, &low, 1) == ESP_OK) {
+            vbus_mv = ((high & 0x3F) << 8) | low;
+        } else {
+            vbus_mv = -1;
+        }
+        return ESP_OK;
+    }
+
     esp_err_t TryReadBatteryLevel(int& level)
     {
         uint8_t battery_level = 0;
@@ -322,6 +350,23 @@ public:
         tp_.num               = read_buffer_[0] & 0x0F;
         tp_.x                 = ((read_buffer_[1] & 0x0F) << 8) | read_buffer_[2];
         tp_.y                 = ((read_buffer_[3] & 0x0F) << 8) | read_buffer_[4];
+#if CONFIG_SC_TOUCH_FIXES
+        // [StackChan fork] The FT6336 reports at most two points on the 320x240 panel; anything else is
+        // noise. Drop it like a read error (keep the last state, no fake release in the middle of a press)
+        // and only force a release if the controller keeps sending garbage.
+        if (tp_.num > 2 || (tp_.num > 0 && (tp_.x >= 320 || tp_.y >= 240))) {
+            int64_t now_us = esp_timer_get_time();
+            if (last_bad_sample_log_us_ == 0 || now_us - last_bad_sample_log_us_ >= 10 * 1000 * 1000) {
+                ESP_LOGW(TAG, "FT6336 implausible sample dropped (num=%d x=%d y=%d)", tp_.num, tp_.x, tp_.y);
+                last_bad_sample_log_us_ = now_us;
+            }
+            tp_.num = 0;
+            tp_.x   = -1;
+            tp_.y   = -1;
+            return ++consecutive_bad_samples_ >= kMaxBadSamples;
+        }
+        consecutive_bad_samples_ = 0;
+#endif
         return true;
     }
 
@@ -335,6 +380,10 @@ private:
     TouchPoint_t tp_;
     int64_t last_error_log_us_     = 0;
     uint32_t consecutive_failures_ = 0;
+    // [StackChan fork]
+    static constexpr uint32_t kMaxBadSamples = 5;  // about 100 ms of garbage, then report a release
+    int64_t last_bad_sample_log_us_   = 0;
+    uint32_t consecutive_bad_samples_ = 0;
 };
 
 class M5StackCoreS3Board : public WifiBoard {
@@ -370,8 +419,97 @@ private:
 
     bool ShouldEnablePowerSave(bool has_external_power, bool is_discharging) const
     {
+#if CONFIG_SC_EXT_POWER_NO_STANDBY
+        // [StackChan fork] has_external_power is the debounced VBUS flag here: a battery helping out
+        // while USB is plugged in no longer starts the sleep / power-off countdown (setting "usb_awake").
+        if (stackchan::sc::setting(stackchan::sc::SettingId::UsbAwake)) {
+            return !has_external_power || xiaozhi_config_.allowShutdownWhenCharging;
+        }
+#endif
         return is_discharging || (has_external_power && xiaozhi_config_.allowShutdownWhenCharging);
     }
+
+#if CONFIG_SC_EXT_POWER_NO_STANDBY
+    // [StackChan fork] External power from the AXP2101 VBUS-good flag, debounced, plus a power log.
+    static constexpr int kExtOnSamples              = 2;  // 1 s polls
+    static constexpr int kExtOffSamples             = 5;
+    static constexpr int64_t kPowerLogIntervalMs    = 10 * 60 * 1000;
+    static constexpr int64_t kPowerDirLogIntervalMs = 30 * 1000;
+    static constexpr int64_t kAssistWarnIntervalMs  = 60 * 1000;
+    bool ext_power_               = false;
+    bool ext_power_known_         = false;
+    int ext_streak_               = 0;
+    int logged_dir_               = -1;
+    int64_t next_power_log_ms_    = 0;
+    int64_t next_dir_log_ms_      = 0;
+    int64_t next_assist_warn_ms_  = 0;
+    std::unique_ptr<sc::Ina226> ina226_;
+    bool ina226_tried_            = false;
+
+    // Replaces has_external_power with the debounced VBUS state. Runs in the esp_timer task.
+    esp_err_t UpdateExternalPower(bool& has_external_power, bool charging, bool discharging, int battery_level)
+    {
+        bool vbus_good = false;
+        int vbus_mv    = -1;
+        esp_err_t err  = pmic_->TryReadVbus(vbus_good, vbus_mv);
+        if (err != ESP_OK) {
+            return err;
+        }
+
+        bool changed = false;
+        if (!ext_power_known_) {
+            ext_power_known_ = true;  // first sample at boot: no delay
+            ext_power_       = vbus_good;
+            changed          = true;
+        } else if (vbus_good != ext_power_) {
+            if (++ext_streak_ >= (vbus_good ? kExtOnSamples : kExtOffSamples)) {
+                ext_power_  = vbus_good;
+                ext_streak_ = 0;
+                changed     = true;
+            }
+        } else {
+            ext_streak_ = 0;
+        }
+        has_external_power = ext_power_;
+
+        const int dir        = charging ? 1 : discharging ? 2 : 0;
+        const int64_t now_ms = esp_timer_get_time() / 1000;
+        if (changed || now_ms >= next_power_log_ms_ || (dir != logged_dir_ && now_ms >= next_dir_log_ms_)) {
+            logged_dir_        = dir;
+            next_power_log_ms_ = now_ms + kPowerLogIntervalMs;
+            next_dir_log_ms_   = now_ms + kPowerDirLogIntervalMs;
+            LogPowerState(vbus_mv, dir, battery_level);
+        }
+        if (ext_power_ && discharging && now_ms >= next_assist_warn_ms_) {
+            next_assist_warn_ms_ = now_ms + kAssistWarnIntervalMs;
+            ESP_LOGW(TAG, "Battery assisting while USB power is present (VBUS %d mV): weak supply or cable?", vbus_mv);
+        }
+        return ESP_OK;
+    }
+
+    void LogPowerState(int vbus_mv, int dir, int battery_level)
+    {
+        if (!ina226_tried_) {
+            ina226_tried_ = true;
+            auto sensor   = std::make_unique<sc::Ina226>();
+            if (sensor->begin(i2c_bus_)) {
+                ina226_ = std::move(sensor);
+            } else {
+                ESP_LOGW(TAG, "INA226 battery monitor not found");
+            }
+        }
+        float cell_v  = 0.0f;
+        float cell_ma = 0.0f;
+        const bool cell_ok = ina226_ && ina226_->read(cell_v, cell_ma);
+
+        static constexpr const char* kDir[] = {"idle", "charging", "discharging"};
+        // Integers only: newlib nano printf has no %f.
+        ESP_LOGI(TAG, "Power: %s (VBUS %d mV), PMIC battery %s, %d%%, cell %d mV %d mA -> power save %s",
+                 ext_power_ ? "USB" : "battery", vbus_mv, kDir[dir], battery_level,
+                 cell_ok ? static_cast<int>(cell_v * 1000.0f) : -1, cell_ok ? static_cast<int>(cell_ma) : 0,
+                 ShouldEnablePowerSave(ext_power_, dir == 2) ? "on" : "off");
+    }
+#endif
 
     void UpdatePowerSaveEnabled(bool has_external_power, bool is_discharging)
     {
@@ -395,6 +533,12 @@ private:
         int battery_level       = 0;
         esp_err_t status_err    = pmic_->TryReadPowerStatus(has_external_power, charging, discharging);
         esp_err_t level_err     = pmic_->TryReadBatteryLevel(battery_level);
+#if CONFIG_SC_EXT_POWER_NO_STANDBY
+        if (status_err == ESP_OK) {
+            status_err =
+                UpdateExternalPower(has_external_power, charging, discharging, level_err == ESP_OK ? battery_level : -1);
+        }
+#endif
 
         {
             std::lock_guard<std::mutex> lock(power_state_mutex_);
@@ -694,6 +838,18 @@ public:
     // the same BLE App setup flow. Never start the upstream configuration AP.
     void StartWifiConfigMode() override
     {
+#if CONFIG_SC_OFFLINE_FIRST
+        // [StackChan fork] Offline first: stay in the AI Agent without a network. Saved networks: keep looking
+        // for them (the station rescans at a growing interval); none saved: stay offline (Wi-Fi is set up from
+        // the launcher's App setup).
+        if (!SsidManager::GetInstance().GetSsidList().empty()) {
+            ESP_LOGW(TAG, "WiFi not found; staying offline and scanning");
+            WifiManager::GetInstance().StartStation();
+        } else {
+            ESP_LOGW(TAG, "No WiFi saved; staying offline");
+        }
+        return;
+#endif
         ESP_LOGW(TAG, "WiFi setup required; opening StackChan App setup");
         GetHAL().requestAppSetup();
     }
@@ -715,6 +871,13 @@ public:
     virtual Camera* GetCamera() override
     {
         return camera_;
+    }
+
+    // [StackChan fork] Debounced VBUS with SC_EXT_POWER_NO_STANDBY, upstream "not discharging" otherwise.
+    bool IsOnExternalPower()
+    {
+        std::lock_guard<std::mutex> lock(power_state_mutex_);
+        return power_state_.status_valid && power_state_.has_external_power;
     }
 
     virtual bool GetBatteryLevel(int& level, bool& charging, bool& discharging) override
@@ -776,6 +939,13 @@ int hal_bridge::board_get_battery_level()
     } else {
         return 100;
     }
+}
+
+// [StackChan fork]
+bool hal_bridge::board_is_on_external_power()
+{
+    auto& board = (M5StackCoreS3Board&)Board::GetInstance();
+    return board.IsOnExternalPower();
 }
 
 bool hal_bridge::board_is_battery_charging()

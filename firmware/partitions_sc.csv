@@ -1,0 +1,12 @@
+# StackChan fork partition table (selected in sdkconfig.defaults.sc).
+# Same layout as upstream partitions.csv for nvs/otadata/phy_init/ota_0/ota_1, so NVS and both app slots
+# stay where they are. The assets partition grows from 4 MB to 6080 KB by using the space that was free
+# after coredump; coredump moves to the last 64 KB of the 16 MB flash. Needed for the MultiNet7 model.
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,      0x9000,   0x4000,
+otadata,  data, ota,      0xd000,   0x2000,
+phy_init, data, phy,      0xf000,   0x1000,
+ota_0,    app,  ota_0,    0x20000,  0x4f0000,
+ota_1,    app,  ota_1,    0x510000, 0x4f0000,
+assets,   data, spiffs,   0xa00000, 0x5f0000,
+coredump, data, coredump, 0xff0000, 0x10000,

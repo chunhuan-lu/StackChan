@@ -1,0 +1,484 @@
+diff --git a/main/application.cc b/main/application.cc
+index e67514b..d9a6d5a 100644
+--- a/main/application.cc
++++ b/main/application.cc
+@@ -1,4 +1,9 @@
+ #include "application.h"
++#if CONFIG_SC_OFFLINE_FIRST
++#include <esp_sntp.h>
++#include <wifi_manager.h>
++#include <hal/board/hal_bridge.h>  // [StackChan fork] show_notice()
++#endif
+ #include <hal/hal.h>
+ #include "assets.h"
+ #include "assets/lang_config.h"
+@@ -155,12 +160,45 @@ void Application::Initialize() {
+                 break;
+         }
+     });
+-
+     // Start network asynchronously
+     board.StartNetwork();
+ 
+     // Update the status bar immediately to show the network state
+     display->UpdateStatusBar(true);
++
++#if CONFIG_SC_OFFLINE_FIRST
++    // [StackChan fork] Offline first: do not wait for the network. Apply the assets (fonts, the wake word model)
++    // now and go to standby; activation and the server connection follow in the background once Wi-Fi is up.
++    CheckAssetsVersion();
++    SetDeviceState(kDeviceStateIdle);
++    Schedule([this]() {
++        audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
++    });
++    // The network start needs the internal RAM that face detection takes (the MQTT task stack could not be created
++    // after it): busy until the first activation is done, or 20 s without Wi-Fi (offline).
++    hal_bridge::set_network_busy(true);
++    esp_timer_handle_t offline_timer = nullptr;
++    esp_timer_create_args_t offline_args = {
++        .callback = [](void* arg) {
++            auto* app = static_cast<Application*>(arg);
++            if (!WifiManager::GetInstance().IsConnected() && app->activation_task_handle_ == nullptr) {
++                ESP_LOGI(TAG, "No network after 20 s: offline");
++                app->Schedule([app]() {
++                    app->NetworkStartDone();
++                });
++            }
++        },
++        .arg = this,
++        .dispatch_method = ESP_TIMER_TASK,
++        .name = "offline",
++        .skip_unhandled_events = true,
++    };
++    if (esp_timer_create(&offline_args, &offline_timer) == ESP_OK) {
++        esp_timer_start_once(offline_timer, 20 * 1000 * 1000);
++    } else {
++        hal_bridge::set_network_busy(false);
++    }
++#endif
+ }
+ 
+ void Application::Run() {
+@@ -186,8 +224,22 @@ void Application::Run() {
+         auto bits = xEventGroupWaitBits(event_group_, ALL_EVENTS, pdTRUE, pdFALSE, portMAX_DELAY);
+ 
+         if (bits & MAIN_EVENT_ERROR) {
++#if CONFIG_SC_OFFLINE_FIRST
++            // [StackChan fork] Offline first: in standby (a reconnect, the background start) only log it; a
++            // conversation that could not start says "No network" and stays in standby, instead of an error
++            // screen until the server comes back.
++            const bool was_idle = GetDeviceState() == kDeviceStateIdle;
++            SetDeviceState(kDeviceStateIdle);
++            if (was_idle) {
++                ESP_LOGW(TAG, "Network error in standby (not shown): %s", last_error_message_.c_str());
++            } else {
++                ESP_LOGW(TAG, "Network error: %s", last_error_message_.c_str());
++                ShowNoNetworkNotice();
++            }
++#else
+             SetDeviceState(kDeviceStateIdle);
+             Alert(Lang::Strings::ERROR, last_error_message_.c_str(), "circle_xmark", Lang::Sounds::OGG_EXCLAMATION);
++#endif
+         }
+ 
+         if (bits & MAIN_EVENT_NETWORK_CONNECTED) {
+@@ -261,6 +313,18 @@ void Application::Run() {
+ 
+ void Application::HandleNetworkConnectedEvent() {
+     ESP_LOGI(TAG, "Network connected");
++#if CONFIG_SC_OFFLINE_FIRST
++    // [StackChan fork] Offline first: already in standby. Check the version and connect to the server in the
++    // background (once; the protocol reconnects by itself), and let SNTP try again now.
++    if (!protocol_) {
++        StartActivation(true);
++    }
++    if (esp_sntp_enabled()) {
++        esp_sntp_restart();
++    }
++    Board::GetInstance().GetDisplay()->UpdateStatusBar(true);
++    return;
++#endif
+     auto state = GetDeviceState();
+ 
+     if (state == kDeviceStateStarting || state == kDeviceStateWifiConfiguring) {
+@@ -301,6 +365,26 @@ void Application::HandleActivationDoneEvent() {
+     ESP_LOGI(TAG, "Activation done");
+ 
+     SystemInfo::PrintHeapStats();
++#if CONFIG_SC_OFFLINE_FIRST
++    if (background_activation_) {
++        // [StackChan fork] Offline first: done in the background while in standby: no state change, no version
++        // notice, no sound; a conversation that waited for it starts now.
++        background_activation_ = false;
++        if (ota_) {
++            has_server_time_ = ota_->HasServerTime();
++            ota_.reset();
++        }
++        NetworkStartDone();
++        Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
++        if (pending_chat_) {
++            pending_chat_ = false;
++            if (GetDeviceState() == kDeviceStateIdle) {
++                ToggleChatState();
++            }
++        }
++        return;
++    }
++#endif
+     SetDeviceState(kDeviceStateIdle);
+ 
+     has_server_time_ = ota_->HasServerTime();
+@@ -338,6 +422,60 @@ void Application::ActivationTask() {
+     xEventGroupSetBits(event_group_, MAIN_EVENT_ACTIVATION_DONE);
+ }
+ 
++// [StackChan fork] The activation task (version check, protocol); background: while in standby (offline first).
++void Application::StartActivation(bool background) {
++    if (activation_task_handle_ != nullptr) {
++        ESP_LOGW(TAG, "Activation task already running");
++        return;
++    }
++    background_activation_ = background;
++#if CONFIG_SC_OFFLINE_FIRST
++    hal_bridge::set_network_busy(true);
++#endif
++    xTaskCreate([](void* arg) {
++        Application* app = static_cast<Application*>(arg);
++        app->ActivationTask();
++        app->activation_task_handle_ = nullptr;
++        vTaskDelete(NULL);
++    }, "activation", 4096 * 2, this, 2, &activation_task_handle_);
++}
++
++#if CONFIG_SC_OFFLINE_FIRST
++// [StackChan fork] Offline first: a conversation needs the network. Without Wi-Fi: say so and stay in standby; with
++// Wi-Fi but no server connection yet: connect now and open the conversation when that is done. True: not now.
++bool Application::OfflineGate() {
++    if (!WifiManager::GetInstance().IsConnected()) {
++        ShowNoNetworkNotice();
++        return true;
++    }
++    if (!protocol_) {
++        ESP_LOGI(TAG, "Conversation requested: connecting to the server first");
++        pending_chat_ = true;
++        StartActivation(true);
++        return true;
++    }
++    return false;
++}
++
++// The network start is over (done, or no network): a wake word start that waited for it happens now, then face
++// detection may load its model again.
++void Application::NetworkStartDone() {
++    // The wake word model first: its load peak is over before face detection loads its model.
++    if (wake_word_deferred_ && GetDeviceState() == kDeviceStateIdle) {
++        wake_word_deferred_ = false;
++        wake_word_started_  = true;
++        audio_service_.EnableWakeWordDetection(true);
++    }
++    hal_bridge::set_network_busy(false);
++}
++
++void Application::ShowNoNetworkNotice() {
++    ESP_LOGW(TAG, "No network: conversation not started");
++    hal_bridge::show_notice("No network. Please connect to the internet first.", 5000);
++    audio_service_.PlaySound(Lang::Sounds::OGG_EXCLAMATION);
++}
++#endif
++
+ void Application::CheckAssetsVersion() {
+     // Only allow CheckAssetsVersion to be called once
+     if (assets_version_checked_) {
+@@ -357,6 +495,14 @@ void Application::CheckAssetsVersion() {
+     Settings settings("assets", true);
+     // Check if there is a new assets need to be downloaded
+     std::string download_url = settings.GetString("download_url");
++#if CONFIG_SC_DISABLE_REMOTE_OTA
++    // [StackChan fork] Ignore a download URL pushed earlier: it would replace the custom assets.
++    if (!download_url.empty()) {
++        ESP_LOGW(TAG, "Ignoring pushed assets URL (CONFIG_SC_DISABLE_REMOTE_OTA): %s", download_url.c_str());
++        settings.EraseKey("download_url");
++        download_url.clear();
++    }
++#endif
+ 
+     if (!download_url.empty()) {
+         settings.EraseKey("download_url");
+@@ -405,11 +551,24 @@ void Application::CheckNewVersion() {
+     auto& board = Board::GetInstance();
+     while (true) {
+         auto display = board.GetDisplay();
+-        display->SetStatus(Lang::Strings::CHECKING_NEW_VERSION);
++        if (!background_activation_) {  // [StackChan fork] a status other than standby hides the idle face
++            display->SetStatus(Lang::Strings::CHECKING_NEW_VERSION);
++        }
+ 
+         esp_err_t err = ota_->CheckVersion();
+         if (err != ESP_OK) {
+             retry_count++;
++            if (background_activation_) {
++                // [StackChan fork] Offline first: in the background no alerts and two tries; the server connection
++                // then uses the settings saved by the last successful check.
++                ESP_LOGW(TAG, "Check new version failed (code=%d), %s", err,
++                         retry_count < 2 ? "retry in 5 s" : "using the saved server settings");
++                if (retry_count >= 2) {
++                    return;
++                }
++                vTaskDelay(pdMS_TO_TICKS(5000));
++                continue;
++            }
+             if (retry_count >= MAX_RETRY) {
+                 ESP_LOGE(TAG, "Too many retries, exit version check");
+                 return;
+@@ -435,10 +594,16 @@ void Application::CheckNewVersion() {
+         retry_delay = 10; // Reset retry delay
+ 
+         if (ota_->HasNewVersion()) {
++#if CONFIG_SC_DISABLE_AUTO_OTA
++            // [StackChan fork] Keep self-built firmware: report the new version but do not install it.
++            ESP_LOGW(TAG, "New firmware %s available, automatic OTA disabled (CONFIG_SC_DISABLE_AUTO_OTA)",
++                     ota_->GetFirmwareVersion().c_str());
++#else
+             if (UpgradeFirmware(ota_->GetFirmwareUrl(), ota_->GetFirmwareVersion())) {
+                 return; // This line will never be reached after reboot
+             }
+             // If upgrade failed, continue to normal operation
++#endif
+         }
+ 
+         // No new version, mark the current version as valid
+@@ -451,7 +616,9 @@ void Application::CheckNewVersion() {
+             break;
+         }
+ 
+-        display->SetStatus(Lang::Strings::ACTIVATION);
++        if (!background_activation_) {  // [StackChan fork]
++            display->SetStatus(Lang::Strings::ACTIVATION);
++        }
+         // Retain automatic device authentication, with a bounded retry budget.
+         if (++challenge_rounds > 3) {
+             GetHAL().requestAppSetup();
+@@ -480,7 +647,9 @@ void Application::InitializeProtocol() {
+     auto display = board.GetDisplay();
+     auto codec = board.GetAudioCodec();
+ 
+-    display->SetStatus(Lang::Strings::LOADING_PROTOCOL);
++    if (!background_activation_) {  // [StackChan fork]
++        display->SetStatus(Lang::Strings::LOADING_PROTOCOL);
++    }
+ 
+     if (ota_->HasMqttConfig()) {
+         protocol_ = std::make_unique<MqttProtocol>();
+@@ -491,6 +660,12 @@ void Application::InitializeProtocol() {
+         protocol_ = std::make_unique<MqttProtocol>();
+     }
+ 
++    if (background_activation_) {
++        // [StackChan fork] Offline first: the OTA object holds internal RAM that the MQTT task stack needs.
++        has_server_time_ = ota_->HasServerTime();
++        ota_.reset();
++    }
++
+     protocol_->OnConnected([this]() {
+         DismissAlert();
+     });
+@@ -662,6 +837,11 @@ void Application::HandleToggleChatEvent() {
+         return;
+     }
+ 
++#if CONFIG_SC_OFFLINE_FIRST
++    if (state == kDeviceStateIdle && OfflineGate()) {
++        return;
++    }
++#endif
+     if (!protocol_) {
+         ESP_LOGE(TAG, "Protocol not initialized");
+         return;
+@@ -717,11 +897,16 @@ void Application::HandleStartListeningEvent() {
+         return;
+     }
+ 
++#if CONFIG_SC_OFFLINE_FIRST
++    if (state == kDeviceStateIdle && OfflineGate()) {
++        return;
++    }
++#endif
+     if (!protocol_) {
+         ESP_LOGE(TAG, "Protocol not initialized");
+         return;
+     }
+-    
++
+     if (state == kDeviceStateIdle) {
+         if (!protocol_->IsAudioChannelOpened()) {
+             SetDeviceState(kDeviceStateConnecting);
+@@ -754,6 +939,12 @@ void Application::HandleStopListeningEvent() {
+ }
+ 
+ void Application::HandleWakeWordDetectedEvent() {
++#if CONFIG_SC_OFFLINE_FIRST
++    if (GetDeviceState() == kDeviceStateIdle && OfflineGate()) {
++        audio_service_.EnableWakeWordDetection(true);  // the detection stopped itself
++        return;
++    }
++#endif
+     if (!protocol_) {
+         return;
+     }
+@@ -853,6 +1044,16 @@ void Application::HandleStateChangedEvent() {
+             display->ClearChatMessages();  // Clear messages first
+             display->SetEmotion("neutral"); // Then set emotion (wechat mode checks child count)
+             audio_service_.EnableVoiceProcessing(false);
++#if CONFIG_SC_OFFLINE_FIRST
++            // [StackChan fork] The first start loads the wake word model (about 12 KB of internal RAM, 27 KB while
++            // it loads); while the network starts (HTTPS needs about as much) it waits, as in the upstream order.
++            if (!wake_word_started_ && hal_bridge::network_busy()) {
++                wake_word_deferred_ = true;
++                ESP_LOGI(TAG, "Wake word starts after the network start");
++                break;
++            }
++            wake_word_started_ = true;
++#endif
+             audio_service_.EnableWakeWordDetection(true);
+             break;
+         case kDeviceStateConnecting:
+@@ -1002,6 +1203,11 @@ bool Application::UpgradeFirmware(const std::string& url, const std::string& ver
+ }
+ 
+ void Application::WakeWordInvoke(const std::string& wake_word) {
++#if CONFIG_SC_OFFLINE_FIRST
++    if (GetDeviceState() == kDeviceStateIdle && OfflineGate()) {
++        return;
++    }
++#endif
+     if (!protocol_) {
+         return;
+     }
+diff --git a/main/application.h b/main/application.h
+index 1418901..3335f3c 100644
+--- a/main/application.h
++++ b/main/application.h
+@@ -152,6 +152,15 @@ private:
+     void HandleNetworkConnectedEvent();
+     void HandleNetworkDisconnectedEvent();
+     void HandleActivationDoneEvent();
++    // [StackChan fork] Offline first (CONFIG_SC_OFFLINE_FIRST)
++    void StartActivation(bool background);
++    bool OfflineGate();
++    void ShowNoNetworkNotice();
++    void NetworkStartDone();
++    bool wake_word_started_  = false;  // loaded once: later starts cost nothing
++    bool wake_word_deferred_ = false;  // standby reached while the network starts
++    bool background_activation_ = false;  // activating while in standby: no state changes, alerts or sounds
++    bool pending_chat_          = false;  // a conversation waits for the server connection
+     void HandleWakeWordDetectedEvent();
+     void ContinueOpenAudioChannel(ListeningMode mode);
+     void ContinueWakeWordInvoke(const std::string& wake_word);
+diff --git a/main/boards/common/backlight.cc b/main/boards/common/backlight.cc
+index c62fd7a..32049f6 100644
+--- a/main/boards/common/backlight.cc
++++ b/main/boards/common/backlight.cc
+@@ -48,7 +48,9 @@ void Backlight::SetBrightness(uint8_t brightness, bool permanent) {
+         brightness = 100;
+     }
+ 
+-    if (brightness_ == brightness) {
++    // [StackChan fork] Also retarget a pending transition: two calls in a row from the esp_timer task
++    // (e.g. restore then dim) must end at the last value, not at the first one.
++    if (brightness_ == brightness && target_brightness_ == brightness) {
+         return;
+     }
+ 
+diff --git a/main/device_state_machine.cc b/main/device_state_machine.cc
+index 30581de..18b225a 100644
+--- a/main/device_state_machine.cc
++++ b/main/device_state_machine.cc
+@@ -44,6 +44,12 @@ bool DeviceStateMachine::IsValidTransition(DeviceState from, DeviceState to) con
+             return to == kDeviceStateStarting;
+ 
+         case kDeviceStateStarting:
++#if CONFIG_SC_OFFLINE_FIRST
++            // [StackChan fork] Offline first: standby before the network is up.
++            if (to == kDeviceStateIdle) {
++                return true;
++            }
++#endif
+             // Can go to wifi configuring or activating
+             return to == kDeviceStateWifiConfiguring ||
+                    to == kDeviceStateActivating;
+diff --git a/main/mcp_server.cc b/main/mcp_server.cc
+index 7cd7ba0..8d5251c 100644
+--- a/main/mcp_server.cc
++++ b/main/mcp_server.cc
+@@ -149,6 +149,7 @@ void McpServer::AddUserOnlyTools() {
+         });
+ 
+     // Firmware upgrade
++#if !CONFIG_SC_DISABLE_REMOTE_OTA  // [StackChan fork] the server must not push firmware to self-built devices
+     AddUserOnlyTool("self.upgrade_firmware", "Upgrade firmware from a specific URL. This will download and install the firmware, then reboot the device.",
+         PropertyList({
+             Property("url", kPropertyTypeString, "The URL of the firmware binary file to download and install")
+@@ -167,6 +168,7 @@ void McpServer::AddUserOnlyTools() {
+             
+             return true;
+         });
++#endif
+ 
+     // Display control
+ #ifdef HAVE_LVGL
+@@ -285,6 +287,7 @@ void McpServer::AddUserOnlyTools() {
+ #endif // HAVE_LVGL
+ 
+     // Assets download url
++#if !CONFIG_SC_DISABLE_REMOTE_OTA  // [StackChan fork] pushed assets would replace the custom wake word model
+     auto& assets = Assets::GetInstance();
+     if (assets.partition_valid()) {
+         AddUserOnlyTool("self.assets.set_download_url", "Set the download url for the assets",
+@@ -298,6 +301,7 @@ void McpServer::AddUserOnlyTools() {
+                 return true;
+             });
+     }
++#endif
+ }
+ 
+ void McpServer::AddTool(McpTool* tool) {
+diff --git a/scripts/build_default_assets.py b/scripts/build_default_assets.py
+index 9ca1464..7d29b3d 100755
+--- a/scripts/build_default_assets.py
++++ b/scripts/build_default_assets.py
+@@ -463,7 +463,7 @@ def read_wakenet_from_sdkconfig(sdkconfig_path):
+         return []
+         
+     models = []
+-    with io.open(sdkconfig_path, "r") as f:
++    with io.open(sdkconfig_path, "r", encoding="utf-8") as f:
+         for label in f:
+             label = label.strip("\n")
+             if 'CONFIG_SR_WN' in label and '#' not in label[0]:
+@@ -488,7 +488,7 @@ def read_multinet_from_sdkconfig(sdkconfig_path):
+         print(f"Warning: sdkconfig file not found: {sdkconfig_path}")
+         return []
+         
+-    with io.open(sdkconfig_path, "r") as f:
++    with io.open(sdkconfig_path, "r", encoding="utf-8") as f:
+         models_string = ''
+         for label in f:
+             label = label.strip("\n")
+@@ -549,7 +549,7 @@ def read_wake_word_type_from_sdkconfig(sdkconfig_path):
+         'wake_word_disabled': False
+     }
+     
+-    with io.open(sdkconfig_path, "r") as f:
++    with io.open(sdkconfig_path, "r", encoding="utf-8") as f:
+         for line in f:
+             line = line.strip("\n")
+             if line.startswith('#'):
+@@ -578,7 +578,7 @@ def read_custom_wake_word_from_sdkconfig(sdkconfig_path):
+         return None
+         
+     config_values = {}
+-    with io.open(sdkconfig_path, "r") as f:
++    with io.open(sdkconfig_path, "r", encoding="utf-8") as f:
+         for line in f:
+             line = line.strip("\n")
+             if line.startswith('#') or '=' not in line:

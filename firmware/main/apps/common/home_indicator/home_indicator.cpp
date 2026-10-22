@@ -67,6 +67,8 @@ public:
 
                 // 判断标准：向上位移足够，且角度偏垂直
                 if (delta_y > _swipe_min_dist && delta_y > delta_x) {
+                    mclog::tagInfo("HomeIndicator", "home gesture ({},{}) -> ({},{})", _start_point.x,
+                                   _start_point.y, curr_point.x, curr_point.y);  // [StackChan fork]
                     if (onGesture) {
                         onGesture();
                     }
@@ -117,7 +119,10 @@ public:
         _btn->setShadowWidth(0);
         _btn->setRadius(18);
         _btn->addFlag(LV_OBJ_FLAG_FLOATING);
-        _btn->onClick().connect([&]() { _is_clicked = true; });
+        _btn->onClick().connect([&]() {
+            mclog::tagInfo("HomeIndicator", "home button clicked");  // [StackChan fork]
+            _is_clicked = true;
+        });
 
         _icon = std::make_unique<Image>(_btn->get());
         _icon->align(LV_ALIGN_CENTER, 0, -10);
@@ -133,11 +138,50 @@ public:
         _pos_y_anim.teleport(_pos_y_hide);
     }
 
+    // [StackChan fork] Gear button right of Home, opens the settings panel (REQ-006).
+    void addSettingsButton(uint32_t colorButton, uint32_t colorBorder)
+    {
+        if (_gear) {
+            return;
+        }
+        _gear = std::make_unique<Button>(_bg_mask->get());
+        _gear->setSize(73, 73);
+        _gear->setAlign(LV_ALIGN_BOTTOM_MID);
+        _gear->setBgColor(lv_color_hex(colorButton));
+        _gear->setBorderWidth(2);
+        _gear->setBorderColor(lv_color_hex(colorBorder));
+        _gear->setShadowWidth(0);
+        _gear->setRadius(18);
+        _gear->addFlag(LV_OBJ_FLAG_FLOATING);
+        _gear->setPos(kGearX, _pos_y_anim.directValue());
+        _gear->onClick().connect([&]() {
+            mclog::tagInfo("HomeIndicator", "settings button clicked");
+            _is_settings_clicked = true;
+        });
+        lv_obj_t* icon = lv_label_create(_gear->get());
+        lv_label_set_text(icon, LV_SYMBOL_SETTINGS);
+        lv_obj_set_style_text_font(icon, &lv_font_montserrat_24, 0);
+        lv_obj_set_style_text_color(icon, lv_color_hex(colorBorder), 0);
+        lv_obj_align(icon, LV_ALIGN_CENTER, 0, -10);
+    }
+
+    bool isSettingsClicked()
+    {
+        if (_is_settings_clicked) {
+            _is_settings_clicked = false;
+            return true;
+        }
+        return false;
+    }
+
     void update()
     {
         _pos_y_anim.update();
         if (!_pos_y_anim.done()) {
             _btn->setPos(0, _pos_y_anim.directValue());
+            if (_gear) {
+                _gear->setPos(kGearX, _pos_y_anim.directValue());  // [StackChan fork]
+            }
         } else {
             if (_hide_mask_flag) {
                 _hide_mask_flag = false;
@@ -166,6 +210,17 @@ public:
         return _is_hidden;
     }
 
+    // [StackChan fork] Hide at once, without the slide-out animation (used right before a restart).
+    void hideNow()
+    {
+        _btn->setHidden(true);
+        if (_gear) {
+            _gear->setHidden(true);
+        }
+        _bg_mask->setHidden(true);
+        _is_hidden = true;
+    }
+
     bool isClicked()
     {
         if (_is_clicked) {
@@ -178,6 +233,7 @@ public:
 private:
     const int _pos_y_show = 22;
     const int _pos_y_hide = 75;
+    static constexpr int kGearX = 120;  // [StackChan fork] centre offset: right of the 152 px Home button
 
     std::unique_ptr<Container> _bg_mask;
     std::unique_ptr<Button> _btn;
@@ -187,6 +243,8 @@ private:
     bool _is_clicked     = false;
     bool _hide_mask_flag = false;
     lv_image_dsc_t _icon_home;
+    std::unique_ptr<Button> _gear;  // [StackChan fork]
+    bool _is_settings_clicked = false;
 };
 
 /**
@@ -196,6 +254,16 @@ private:
 class HomeIndicator {
 public:
     std::function<void(void)> onGoHome;
+    std::function<bool(void)> willRestart;  // [StackChan fork] nullptr = going home always restarts
+
+#if CONFIG_SC_TOUCH_FIXES
+    ~HomeIndicator()
+    {
+        if (_going_home) {
+            lv_obj_delete(_going_home);  // never outlive the indicator (Settings goes home without a restart)
+        }
+    }
+#endif
 
     void init(lv_obj_t* parent, uint32_t colorButton, uint32_t colorBorder)
     {
@@ -204,6 +272,8 @@ public:
         _home_gesture->init();
 
         _home_button = std::make_unique<HomeButton>(parent, colorButton, colorBorder);
+        _color_button = colorButton;  // [StackChan fork]
+        _color_border = colorBorder;
         _home_button->show();
         _button_show_tick = GetHAL().millis();
         _is_first_show    = true;
@@ -211,10 +281,38 @@ public:
 
     void update()
     {
+#if CONFIG_SC_TOUCH_FIXES
+        // [StackChan fork] The "Going home..." overlay is drawn by the LVGL task; go home once it had time
+        // to show. onGoHome may destroy this object, so return right after it.
+        if (_go_home_at) {
+            if (GetHAL().millis() >= _go_home_at && onGoHome) {
+                _go_home_at = 0;
+                onGoHome();
+            }
+            return;
+        }
         _home_gesture->update();
         _home_button->update();
+        // Judge a pending click before the button times out, so a click made just before is kept.
+        if (check_go_home()) {
+            return;
+        }
+        check_open_settings();
+        update_home_button_visibility();
+#else
+        _home_gesture->update();
+        _home_button->update();
+        check_open_settings();  // [StackChan fork]
         update_home_button_visibility();
         check_go_home();
+#endif
+    }
+
+    // [StackChan fork] Show a gear next to the Home button that calls onSettings.
+    void enableSettings(std::function<void(void)> onSettings)
+    {
+        _on_settings = std::move(onSettings);
+        _home_button->addSettingsButton(_color_button, _color_border);
     }
 
 private:
@@ -222,6 +320,28 @@ private:
     std::unique_ptr<HomeButton> _home_button;
     uint32_t _button_show_tick = 0;
     bool _is_first_show        = true;
+    // [StackChan fork]
+    std::function<void(void)> _on_settings;
+    uint32_t _color_button = 0;
+    uint32_t _color_border = 0;
+#if CONFIG_SC_TOUCH_FIXES
+    lv_obj_t* _going_home = nullptr;
+    uint32_t _go_home_at  = 0;
+#endif
+
+    // [StackChan fork] Same guard as the Home click: ignore clicks while the buttons slide.
+    void check_open_settings()
+    {
+        if (!_home_button->isSettingsClicked() || !_on_settings) {
+            return;
+        }
+        if (_home_button->isHidden() || GetHAL().millis() - _button_show_tick < 300) {
+            mclog::tagInfo("HomeIndicator", "settings click ignored (button sliding)");
+            return;
+        }
+        _home_button->hide();
+        _on_settings();
+    }
 
     void handle_home_gesture()
     {
@@ -239,6 +359,48 @@ private:
         }
     }
 
+#if CONFIG_SC_TOUCH_FIXES
+    // [StackChan fork] Returns true if onGoHome ran (this object may be gone) or is scheduled.
+    bool check_go_home()
+    {
+        if (!_home_button->isClicked()) {
+            return false;
+        }
+        // The button stays clickable while it slides in or out: ignore those clicks, they usually come
+        // from the same touch as the gesture.
+        if (_home_button->isHidden() || GetHAL().millis() - _button_show_tick < 300) {
+            mclog::tagInfo("HomeIndicator", "home click ignored (button sliding)");
+            return false;
+        }
+        if (!willRestart || willRestart()) {
+            show_going_home();
+            _go_home_at = GetHAL().millis() + 300;
+            return true;
+        }
+        if (onGoHome) {
+            onGoHome();
+        }
+        return true;
+    }
+
+    // Going home restarts the device in the AI Agent (xiaozhi cannot be stopped in place) and in most
+    // apps. Say so, otherwise the restart looks like a crash.
+    void show_going_home()
+    {
+        _home_button->hideNow();
+        _going_home = lv_obj_create(lv_layer_top());
+        lv_obj_remove_style_all(_going_home);
+        lv_obj_remove_flag(_going_home, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_size(_going_home, LV_PCT(100), LV_PCT(100));
+        lv_obj_set_style_bg_color(_going_home, lv_color_black(), 0);
+        lv_obj_set_style_bg_opa(_going_home, LV_OPA_70, 0);
+        lv_obj_t* label = lv_label_create(_going_home);
+        lv_label_set_text(label, "Going home...");
+        lv_obj_set_style_text_color(label, lv_color_white(), 0);
+        lv_obj_set_style_text_font(label, &lv_font_montserrat_24, 0);
+        lv_obj_center(label);
+    }
+#else
     void check_go_home()
     {
         if (_home_button->isClicked()) {
@@ -247,6 +409,7 @@ private:
             }
         }
     }
+#endif
 };
 
 /**
@@ -280,6 +443,22 @@ bool is_home_indicator_created()
 void destroy_home_indicator()
 {
     _home_indicator.reset();
+}
+
+// [StackChan fork]
+void set_home_indicator_will_restart(std::function<bool(void)> willRestart)
+{
+    if (_home_indicator) {
+        _home_indicator->willRestart = std::move(willRestart);
+    }
+}
+
+// [StackChan fork]
+void set_home_indicator_settings(std::function<void(void)> onSettings)
+{
+    if (_home_indicator) {
+        _home_indicator->enableSettings(std::move(onSettings));
+    }
 }
 
 }  // namespace view

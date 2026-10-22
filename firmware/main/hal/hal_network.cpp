@@ -19,10 +19,20 @@
 
 static std::string _tag = "Network";
 
+// [StackChan fork] Set once SNTP succeeds; xiaozhi's OTA check may shift the clock by the timezone
+// offset before that, so local time is only trusted afterwards.
+static std::atomic<bool> _time_synced{false};
+
 static void time_sync_notification_cb(struct timeval*)
 {
     mclog::tagInfo(_tag, "SNTP time synchronized");
     GetHAL().syncSystemTimeToRtc();
+    _time_synced = true;
+}
+
+bool Hal::isTimeSynced()
+{
+    return _time_synced;
 }
 
 void Hal::startSntp()
