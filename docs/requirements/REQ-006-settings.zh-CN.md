@@ -56,6 +56,9 @@ fork 新增的功能（待机导演、表情、睡眠屏幕、Claude Code 联动
 | `usb_awake` | No standby on USB | 开 / 关 | 开 | `SC_EXT_POWER_NO_STANDBY` |
 | `face_track` | Look at faces | 开 / 关 | 开 | `SC_FACE_PROBE`（[REQ-008](REQ-008-face-tracking.zh-CN.md)） |
 | `face_head` | Turn head to faces | 开 / 关 | 开 | 同上 |
+| `face_dead` | Head turns beyond | 2–20° | 8 | 同上 |
+| `face_speed` | Head speed | 100–1000（50） | 500 | 同上 |
+| `face_steady` | Steadiness | Low / Medium / High | Medium | 同上 |
 | `face_box` | Show face box | 开 / 关 | 关 | 同上 |
 | `face_probe` | Face checks / s | 0–4 | 1 | 同上 |
 

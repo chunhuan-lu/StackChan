@@ -93,10 +93,12 @@ The idle director owns it, so it never fights the other idle behaviours for the 
   sighting becomes a direction: the head angle at the frame time (interpolated) plus the angle in the view. So frames
   taken while the head turns count as well, and errors do not add up from step to step.
 - **Head** (`face_head`): follows that direction, 0.35 s ahead of someone moving faster than 10 deg/s, when the head
-  points more than 8 degrees (sideways) or 6 degrees (up and down) away; smaller offsets are left to the eyes, so the
-  head keeps still while someone sits and types. The servo speed grows with the distance (180-500). Each placement
-  moves the person 60 % (a detection) or 35 % (the tracked patch) of the way to the new position, which filters the
-  few degrees the two disagree by; the speed comes from these smoothed positions. Yaw within +/-70 degrees, pitch within 15-75 degrees (inside the 5-85 degree safety
+  points more than `face_dead` degrees (default 8) sideways or three quarters of that up and down; smaller offsets
+  are left to the eyes, so the head keeps still while someone sits and types. The servo speed grows with the
+  distance, up to `face_speed` (default 500; the slowest is 36 % of it, at least 100). Each placement moves the
+  person part of the way to the new position, by `face_steady`: low 90 % / 60 % (a detection / the tracked patch),
+  medium 60 % / 35 % (default), high 35 % / 20 %; this filters the few degrees the two disagree by, and the speed
+  comes from the smoothed positions. Yaw within +/-70 degrees, pitch within 15-75 degrees (inside the 5-85 degree safety
   range). A tracked patch keeps following going but does not start it (a face has to be detected first).
 - **Direction**: positive yaw turns to the robot's right. Measured with the gyro on 2026-10-22: a +20 degree yaw
   move turned clockwise seen from above (peak -45.8 deg/s), the way back +42.6 deg/s. The upstream comment on
@@ -130,6 +132,9 @@ robot wakes up when it is switched off. The xiaozhi power save is a separate thi
 |---|---|---|---|
 | `face_track` | Look at faces | on | Detection while idle, eyes follow the face |
 | `face_head` | Turn head to faces | on | The head turns too |
+| `face_dead` | Head turns beyond | 8 deg | 2-20; the eyes follow smaller moves, smaller reacts sooner |
+| `face_speed` | Head speed | 500 | 100-1000, fastest servo speed while following |
+| `face_steady` | Steadiness | Medium | Low / Medium / High: how much small movements are smoothed out |
 | `face_box` | Show face box | off | Debug overlay with box, score and detection time |
 | `face_probe` | Face checks / s | 1 | 0-4 while looking for a face; 0 = camera off |
 | `sleep` | Sleeping | on | Off: never sleeps |

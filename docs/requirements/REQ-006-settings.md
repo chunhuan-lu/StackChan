@@ -58,6 +58,9 @@ Only settings whose feature is compiled in are listed.
 | `usb_awake` | No standby on USB | on / off | on | `SC_EXT_POWER_NO_STANDBY` |
 | `face_track` | Look at faces | on / off | on | `SC_FACE_PROBE` ([REQ-008](REQ-008-face-tracking.md)) |
 | `face_head` | Turn head to faces | on / off | on | same |
+| `face_dead` | Head turns beyond | 2–20 deg | 8 | same |
+| `face_speed` | Head speed | 100–1000 (50) | 500 | same |
+| `face_steady` | Steadiness | Low / Medium / High | Medium | same |
 | `face_box` | Show face box | on / off | off | same |
 | `face_probe` | Face checks / s | 0–4 | 1 | same |
 

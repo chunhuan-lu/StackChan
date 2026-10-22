@@ -81,6 +81,7 @@ namespace stackchan::sc {
 static constexpr const char* kNvsNamespace = "sc_cfg";
 static const char* const kActivityLabels[] = {"Off", "Low", "Medium", "High"};
 static const char* const kSuitColorLabels[] = {"Clay", "Orange", "Bright", "Custom"};
+static const char* const kSteadyLabels[]    = {"Low", "Medium", "High"};
 
 // Ranges here and in Kconfig.projbuild are the same.
 static const SettingInfo kSettings[] = {
@@ -141,6 +142,13 @@ static const SettingInfo kSettings[] = {
      "While idle the robot looks for faces with the camera and its eyes follow the one in front of it."},
     {SettingId::FaceTrackHead, "face_head", "Camera", "Turn head to faces", "", SettingType::Bool, 1, 0, 1, 1,
      nullptr, "The head turns too, so the face stays in the middle of the camera view."},
+    {SettingId::FaceDeadband, "face_dead", "Camera", "Head turns beyond", " deg", SettingType::Int, 8, 2, 20, 1,
+     nullptr, "The head turns when the face is more than this many degrees off (three quarters of it up and down); "
+              "the eyes follow smaller moves. Smaller reacts sooner."},
+    {SettingId::FaceSpeed, "face_speed", "Camera", "Head speed", "", SettingType::Int, 500, 100, 1000, 50, nullptr,
+     "Fastest servo speed while following a face, 100 slow to 1000 fastest."},
+    {SettingId::FaceSteady, "face_steady", "Camera", "Steadiness", "", SettingType::Choice, 1, 0, 2, 1, kSteadyLabels,
+     "How much small face movements are smoothed out: 0 low (reacts at once), 1 medium, 2 high (calm)."},
     {SettingId::FaceBox, "face_box", "Camera", "Show face box", "", SettingType::Bool, 0, 0, 1, 1, nullptr,
      "Draw a box around the detected face on the screen (for testing)."},
     {SettingId::FaceProbeRate, "face_probe", "Camera", "Face checks / s", "", SettingType::Int, 1, 0, 4, 1, nullptr,
@@ -175,6 +183,9 @@ static bool compiled_in(SettingId id)
 #endif
         case SettingId::FaceTrack:
         case SettingId::FaceTrackHead:
+        case SettingId::FaceDeadband:
+        case SettingId::FaceSpeed:
+        case SettingId::FaceSteady:
         case SettingId::FaceBox:
         case SettingId::FaceProbeRate:
 #if CONFIG_SC_FACE_PROBE

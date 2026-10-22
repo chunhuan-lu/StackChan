@@ -39,12 +39,14 @@ static constexpr uint32_t kGreetAfterMs = 2 * 60 * 1000;
 static constexpr uint32_t kLogMs        = 3000;
 
 // Following
-// Small offsets are for the eyes (they reach the edge of the view); the head follows bigger ones, so it keeps still
-// while someone sits and types (detections and the tracked patch disagree by a few degrees).
-static constexpr float kDeadbandYaw   = 80;
-static constexpr float kDeadbandPitch = 60;
-static constexpr float kFaceWeight    = 0.6f;   // a placement moves the person this much towards the new position:
-static constexpr float kTrackWeight   = 0.35f;  // detections are trusted more than the tracked patch
+// Small offsets are for the eyes (they reach the edge of the view); the head follows bigger ones (setting
+// "face_dead", up and down three quarters of it), so it keeps still while someone sits and types: detections and the
+// tracked patch disagree by a few degrees.
+static constexpr float kDeadbandPitchShare = 0.75f;
+// A placement moves the person this much of the way to the new position, by "face_steady" (low, medium, high);
+// detections are trusted more than the tracked patch.
+static constexpr float kFaceWeight[]  = {0.9f, 0.6f, 0.35f};
+static constexpr float kTrackWeight[] = {0.6f, 0.35f, 0.2f};
 static constexpr float kRetarget     = 25;     // a new command when the target moved this much since the last one
 static constexpr uint32_t kCmdGapMs  = 150;
 static constexpr uint32_t kResendMs  = 800;    // same target, not there yet: command again after this
@@ -87,10 +89,11 @@ static int approach(int value, int target, int step)
     return value < target ? std::min(value + step, target) : std::max(value - step, target);
 }
 
-// Servo speed for a turn of err (0.1 degree): calm for small corrections, quick for big jumps.
+// Servo speed for a turn of err (0.1 degree): calm for small corrections, quick for big jumps, up to "face_speed".
 static int turn_speed(float err)
 {
-    return std::clamp(static_cast<int>(err / 10.0f * 25.0f), 180, 500);
+    const int fastest = setting(SettingId::FaceSpeed);
+    return std::clamp(static_cast<int>(err / 10.0f * 25.0f), std::max(100, fastest * 36 / 100), fastest);
 }
 
 static const char* side(int dir)
@@ -272,7 +275,8 @@ void IdleDirectorModifier::place_person(Modifiable& sc, const Sighting& s, float
     } else {
         // Smoothed position (detections jitter by a few degrees, the tracked patch drifts), and the speed from the
         // smoothed positions.
-        const float weight = s.kind == SightKind::Face ? kFaceWeight : kTrackWeight;
+        const int steady   = std::clamp(setting(SettingId::FaceSteady), 0, 2);
+        const float weight = s.kind == SightKind::Face ? kFaceWeight[steady] : kTrackWeight[steady];
         yaw                = mood.faceYaw + weight * (yaw - mood.faceYaw);
         pitch              = mood.facePitch + weight * (pitch - mood.facePitch);
         const float dt     = static_cast<int32_t>(s.at - _person_at) / 1000.0f;
@@ -311,8 +315,9 @@ void IdleDirectorModifier::follow(Modifiable& sc, uint32_t now)
     }
     yaw             = std::clamp(yaw, static_cast<float>(-kMaxYaw), static_cast<float>(kMaxYaw));
     pitch           = std::clamp(pitch, static_cast<float>(kMinPitch), static_cast<float>(kMaxPitch));
+    const float dead_yaw = setting(SettingId::FaceDeadband) * 10.0f;
     const float err_yaw = std::fabs(yaw - _head_yaw), err_pitch = std::fabs(pitch - _head_pitch);
-    if (err_yaw < kDeadbandYaw && err_pitch < kDeadbandPitch) {
+    if (err_yaw < dead_yaw && err_pitch < dead_yaw * kDeadbandPitchShare) {
         return;
     }
     const float err = std::max(err_yaw, err_pitch);
